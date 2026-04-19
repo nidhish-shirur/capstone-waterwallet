@@ -1,0 +1,401 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ChevronRight, Building2, Zap, Plus, Trash2, Droplets, TrendingUp, Calculator } from 'lucide-react';
+import { useWaterWallet } from '../context/WaterWalletContext';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const BASE_LPCD = 135; // liters per capita per day (IS standard)
+
+const AMENITY_OPTIONS = [
+  { id: 'garden', label: 'Garden / Landscaping', multiplier: 0.12, emoji: '🌿' },
+  { id: 'carwash', label: 'Daily Car Washing', multiplier: 0.08, emoji: '🚗' },
+  { id: 'pool', label: 'Swimming Pool', multiplier: 0.20, emoji: '🏊' },
+];
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+const YEARS = ['2023', '2024', '2025'];
+
+// ─── Pre-filled dummy billing rows (summer months showing high tanker usage)
+const defaultBillingRows = [
+  { id: 1, month: 'April',    year: '2025', bill: '18500', tankers: 14, costPerTanker: '1500' },
+  { id: 2, month: 'May',      year: '2025', bill: '21200', tankers: 18, costPerTanker: '1500' },
+  { id: 3, month: 'June',     year: '2025', bill: '19800', tankers: 11, costPerTanker: '1600' },
+  { id: 4, month: 'March',    year: '2025', bill: '15300', tankers: 7,  costPerTanker: '1400' },
+  { id: 5, month: 'February', year: '2025', bill: '12800', tankers: 4,  costPerTanker: '1400' },
+  { id: 6, month: 'January',  year: '2025', bill: '13500', tankers: 3,  costPerTanker: '1400' },
+];
+
+// ─── Toggle Switch ──────────────────────────────────────────────────────────
+function ToggleSwitch({ checked, onChange }) {
+  return (
+    <label className="toggle-switch">
+      <input type="checkbox" checked={checked} onChange={onChange} />
+      <span className="toggle-slider"></span>
+    </label>
+  );
+}
+
+// ─── Amenity Checkbox ───────────────────────────────────────────────────────
+function AmenityCheckbox({ option, checked, onChange }) {
+  return (
+    <label
+      className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all
+        ${checked ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:border-slate-300'}`}
+    >
+      <input type="checkbox" checked={checked} onChange={onChange} className="sr-only" />
+      <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all
+        ${checked ? 'border-blue-600 bg-blue-600' : 'border-slate-300 bg-white'}`}>
+        {checked && (
+          <svg viewBox="0 0 10 8" className="w-3 h-3 fill-white">
+            <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </div>
+      <span className="text-lg">{option.emoji}</span>
+      <div className="flex-1">
+        <p className={`text-sm font-medium ${checked ? 'text-blue-800' : 'text-slate-700'}`}>{option.label}</p>
+        <p className="text-xs text-slate-400">+{Math.round(option.multiplier * 100)}% demand</p>
+      </div>
+    </label>
+  );
+}
+
+// ─── Currency formatter ──────────────────────────────────────────────────────
+const fmtINR = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+let nextId = 100;
+
+export default function VirtualMeter() {
+  const navigate = useNavigate();
+  const {
+    setSocietyName: setCtxSocietyName,
+    setFlats: setCtxFlats,
+    setOccupants: setCtxOccupants,
+    setTotalTankerSpend,
+    setTotalMunicipal,
+    setBillingMonths,
+  } = useWaterWallet();
+
+  // ── Card 1 state
+  const [societyName, setSocietyName] = useState('Evergreen Heights CHS');
+  const [flats, setFlats] = useState(50);
+  const [occupants, setOccupants] = useState(4);
+  const [amenities, setAmenities] = useState({ garden: false, carwash: false, pool: false });
+  const [smartMeters, setSmartMeters] = useState(false);
+
+  // ── Card 2 state
+  const [billingRows, setBillingRows] = useState(defaultBillingRows);
+
+  // ── Live demand calculation
+  const { baseDemand, totalMultiplier, adjustedDemand } = useMemo(() => {
+    const base = Number(flats) * Number(occupants) * BASE_LPCD;
+    const mult = AMENITY_OPTIONS.reduce((acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0), 0);
+    return { baseDemand: base, totalMultiplier: mult, adjustedDemand: Math.round(base * (1 + mult)) };
+  }, [flats, occupants, amenities]);
+
+  // ── Billing totals
+  const { totalTankerSpend, totalMunicipal, avgMonthly } = useMemo(() => {
+    const tankerSpend = billingRows.reduce((s, r) => s + Number(r.tankers || 0) * Number(r.costPerTanker || 0), 0);
+    const municipal = billingRows.reduce((s, r) => s + Number(r.bill || 0), 0);
+    const avg = billingRows.length ? Math.round((tankerSpend + municipal) / billingRows.length) : 0;
+    return { totalTankerSpend: tankerSpend, totalMunicipal: municipal, avgMonthly: avg };
+  }, [billingRows]);
+
+  // ── Sync computed totals to global context whenever they change ──
+  useEffect(() => {
+    setCtxSocietyName(societyName);
+    setCtxFlats(Number(flats));
+    setCtxOccupants(Number(occupants));
+    setTotalTankerSpend(totalTankerSpend);
+    setTotalMunicipal(totalMunicipal);
+    setBillingMonths(billingRows.length || 1);
+  }, [societyName, flats, occupants, totalTankerSpend, totalMunicipal, billingRows.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Row handlers
+  const addRow = () => {
+    setBillingRows((prev) => [
+      ...prev,
+      { id: ++nextId, month: 'July', year: '2025', bill: '', tankers: 0, costPerTanker: '1500' },
+    ]);
+  };
+
+  const deleteRow = (id) => setBillingRows((prev) => prev.filter((r) => r.id !== id));
+
+  const updateRow = (id, field, value) =>
+    setBillingRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+
+  return (
+    <div className="p-8 space-y-6">
+
+      {/* ── Card 1: Society Baseline Data ── */}
+      <div className="bg-white rounded-2xl shadow-md p-6">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+            <Building2 size={20} className="text-blue-600" />
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Society Baseline Data</h2>
+            <p className="text-xs text-slate-500">Configure your society's parameters to calculate baseline water demand</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {/* Society Name */}
+          <div className="lg:col-span-3 space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Society Name</label>
+            <input
+              type="text"
+              value={societyName}
+              onChange={(e) => setSocietyName(e.target.value)}
+              placeholder="e.g. Evergreen Heights CHS"
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+            />
+          </div>
+
+          {/* Total Flats */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Number of Flats</label>
+            <input
+              type="number"
+              min={1}
+              value={flats}
+              onChange={(e) => setFlats(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+            />
+          </div>
+
+          {/* Avg Occupants */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Avg Occupants per Flat</label>
+            <input
+              type="number"
+              min={1}
+              value={occupants}
+              onChange={(e) => setOccupants(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+            />
+          </div>
+
+          {/* Live Demand Calculator */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Base Daily Demand</label>
+            <div className="border border-blue-200 bg-blue-50 rounded-xl px-4 py-2.5 flex items-center gap-2">
+              <Calculator size={15} className="text-blue-500 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-blue-700">{baseDemand.toLocaleString('en-IN')} L / day</p>
+                <p className="text-xs text-blue-400">{flats} flats × {occupants} occ × 135 LPCD</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Amenities */}
+          <div className="lg:col-span-3 space-y-2">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Water-Heavy Amenities</label>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {AMENITY_OPTIONS.map((opt) => (
+                <AmenityCheckbox
+                  key={opt.id}
+                  option={opt}
+                  checked={amenities[opt.id]}
+                  onChange={() => setAmenities((prev) => ({ ...prev, [opt.id]: !prev[opt.id] }))}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Adjusted Demand */}
+          {totalMultiplier > 0 && (
+            <div className="lg:col-span-3">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <TrendingUp size={16} className="text-amber-600" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-800">Adjusted Daily Demand (with amenities)</p>
+                    <p className="text-xs text-amber-600">+{Math.round(totalMultiplier * 100)}% multiplier applied</p>
+                  </div>
+                </div>
+                <p className="text-xl font-extrabold text-amber-700">{adjustedDemand.toLocaleString('en-IN')} L/day</p>
+              </div>
+            </div>
+          )}
+
+          {/* Smart Meters Toggle */}
+          <div className="lg:col-span-3">
+            <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5">
+              <div className="flex items-center gap-2">
+                <Zap size={16} className="text-slate-400" />
+                <div>
+                  <p className="text-sm font-medium text-slate-700">Smart Meters Installed?</p>
+                  <p className="text-xs text-slate-400">Enable for real-time IoT data integration</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${smartMeters ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                  {smartMeters ? 'Active' : 'Off'}
+                </span>
+                <ToggleSwitch checked={smartMeters} onChange={() => setSmartMeters(!smartMeters)} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Card 2: Historical Billing Logs ── */}
+      <div className="bg-white rounded-2xl shadow-md p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
+              <Droplets size={20} className="text-red-500" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">Historical Billing Logs</h2>
+              <p className="text-xs text-slate-500">The "water bleed" data — municipal bills + private tanker procurement</p>
+            </div>
+          </div>
+          <button
+            onClick={addRow}
+            className="flex items-center gap-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3.5 py-2 rounded-xl transition-colors"
+          >
+            <Plus size={14} />
+            Add Month
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5 rounded-l-xl">Month & Year</th>
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Municipal Bill (₹)</th>
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Tankers Bought</th>
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Cost / Tanker (₹)</th>
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Tanker Total</th>
+                <th className="px-3 py-2.5 rounded-r-xl"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {billingRows.map((row) => {
+                const tankerTotal = Number(row.tankers || 0) * Number(row.costPerTanker || 0);
+                const isHighUsage = Number(row.tankers) >= 10;
+                return (
+                  <tr key={row.id} className="hover:bg-slate-50/70 transition-colors group">
+                    {/* Month & Year */}
+                    <td className="px-3 py-2">
+                      <div className="flex gap-1">
+                        <select
+                          value={row.month}
+                          onChange={(e) => updateRow(row.id, 'month', e.target.value)}
+                          className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                        >
+                          {MONTHS.map((m) => <option key={m}>{m}</option>)}
+                        </select>
+                        <select
+                          value={row.year}
+                          onChange={(e) => updateRow(row.id, 'year', e.target.value)}
+                          className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-20"
+                        >
+                          {YEARS.map((y) => <option key={y}>{y}</option>)}
+                        </select>
+                      </div>
+                    </td>
+
+                    {/* Municipal Bill */}
+                    <td className="px-3 py-2">
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-medium">₹</span>
+                        <input
+                          type="number"
+                          value={row.bill}
+                          onChange={(e) => updateRow(row.id, 'bill', e.target.value)}
+                          className="border border-slate-200 rounded-lg pl-6 pr-3 py-1.5 text-xs font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-28"
+                        />
+                      </div>
+                    </td>
+
+                    {/* Tankers Bought */}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={0}
+                          value={row.tankers}
+                          onChange={(e) => updateRow(row.id, 'tankers', e.target.value)}
+                          className="border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-16"
+                        />
+                        {isHighUsage && (
+                          <span className="text-xs bg-red-100 text-red-600 font-bold px-1.5 py-0.5 rounded-md">HIGH</span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Cost per Tanker */}
+                    <td className="px-3 py-2">
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-medium">₹</span>
+                        <input
+                          type="number"
+                          value={row.costPerTanker}
+                          onChange={(e) => updateRow(row.id, 'costPerTanker', e.target.value)}
+                          className="border border-slate-200 rounded-lg pl-6 pr-3 py-1.5 text-xs font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-24"
+                        />
+                      </div>
+                    </td>
+
+                    {/* Tanker Total (computed) */}
+                    <td className="px-3 py-2">
+                      <span className={`text-xs font-bold ${tankerTotal > 15000 ? 'text-red-600' : 'text-slate-600'}`}>
+                        {fmtINR(tankerTotal)}
+                      </span>
+                    </td>
+
+                    {/* Delete */}
+                    <td className="px-3 py-2">
+                      <button
+                        onClick={() => deleteRow(row.id)}
+                        className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Summary row */}
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-center">
+            <p className="text-xs text-slate-500 font-medium">Total Municipal Bills</p>
+            <p className="text-lg font-bold text-slate-800 mt-0.5">{fmtINR(totalMunicipal)}</p>
+          </div>
+          <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-center">
+            <p className="text-xs text-red-500 font-medium">Total Tanker Spend</p>
+            <p className="text-lg font-bold text-red-600 mt-0.5">{fmtINR(totalTankerSpend)}</p>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-center">
+            <p className="text-xs text-amber-600 font-medium">Avg Monthly Bleed</p>
+            <p className="text-lg font-bold text-amber-700 mt-0.5">{fmtINR(avgMonthly)}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Action Button ── */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => navigate('/map-studio')} // UPDATE THIS LINE
+          className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-semibold px-6 py-3 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 text-sm"
+        >
+          Process Data & Continue
+          <ChevronRight size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
