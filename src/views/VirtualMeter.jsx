@@ -2,9 +2,15 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronRight, Building2, Zap, Plus, Trash2, Droplets, TrendingUp, Calculator } from 'lucide-react';
 import { useWaterWallet } from '../context/WaterWalletContext';
+import {
+  IS_LPCD,
+  UFW_LOSS_FACTOR,
+  calculateCanonicalDemand,
+} from '../utils/waterConstants';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const BASE_LPCD = 135; // liters per capita per day (IS standard)
+// IS_LPCD (135 L/person/day) is imported from waterConstants — single source
+// of truth shared with the backend constant IS_LPCD in models/constants.py.
 
 const AMENITY_OPTIONS = [
   { id: 'garden', label: 'Garden / Landscaping', multiplier: 0.12, emoji: '🌿' },
@@ -21,12 +27,12 @@ const YEARS = ['2023', '2024', '2025'];
 
 // ─── Pre-filled dummy billing rows (summer months showing high tanker usage)
 const defaultBillingRows = [
-  { id: 1, month: 'April',    year: '2025', bill: '18500', tankers: 14, costPerTanker: '1500' },
-  { id: 2, month: 'May',      year: '2025', bill: '21200', tankers: 18, costPerTanker: '1500' },
-  { id: 3, month: 'June',     year: '2025', bill: '19800', tankers: 11, costPerTanker: '1600' },
-  { id: 4, month: 'March',    year: '2025', bill: '15300', tankers: 7,  costPerTanker: '1400' },
-  { id: 5, month: 'February', year: '2025', bill: '12800', tankers: 4,  costPerTanker: '1400' },
-  { id: 6, month: 'January',  year: '2025', bill: '13500', tankers: 3,  costPerTanker: '1400' },
+  { id: 1, month: 'April',    year: '2025', bill: '18500', tankers: 14, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 2, month: 'May',      year: '2025', bill: '21200', tankers: 18, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 3, month: 'June',     year: '2025', bill: '19800', tankers: 11, costPerTanker: '1600', tankerCapacity: 10000 },
+  { id: 4, month: 'March',    year: '2025', bill: '15300', tankers: 7,  costPerTanker: '1400', tankerCapacity: 10000 },
+  { id: 5, month: 'February', year: '2025', bill: '12800', tankers: 4,  costPerTanker: '1400', tankerCapacity: 10000 },
+  { id: 6, month: 'January',  year: '2025', bill: '13500', tankers: 3,  costPerTanker: '1400', tankerCapacity: 10000 },
 ];
 
 // ─── Toggle Switch ──────────────────────────────────────────────────────────
@@ -79,6 +85,7 @@ export default function VirtualMeter() {
     setTotalTankerSpend,
     setTotalMunicipal,
     setBillingMonths,
+    setAnnualDemand,
   } = useWaterWallet();
 
   // ── Card 1 state
@@ -86,24 +93,55 @@ export default function VirtualMeter() {
   const [flats, setFlats] = useState(50);
   const [occupants, setOccupants] = useState(4);
   const [amenities, setAmenities] = useState({ garden: false, carwash: false, pool: false });
-  const [smartMeters, setSmartMeters] = useState(false);
+  const [includeLosses, setIncludeLosses] = useState(true); // 15% UFW (Unaccounted for Water)
+  const [useMeteredData, setUseMeteredData] = useState(false);
+  const [meteredFrequency, setMeteredFrequency] = useState('Quarterly');
+  const [meteredConsumption, setMeteredConsumption] = useState('');
+  const [meteredBill, setMeteredBill] = useState('');
+  const [meteredTanker, setMeteredTanker] = useState('');
 
   // ── Card 2 state
   const [billingRows, setBillingRows] = useState(defaultBillingRows);
 
-  // ── Live demand calculation
-  const { baseDemand, totalMultiplier, adjustedDemand } = useMemo(() => {
-    const base = Number(flats) * Number(occupants) * BASE_LPCD;
-    const mult = AMENITY_OPTIONS.reduce((acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0), 0);
-    return { baseDemand: base, totalMultiplier: mult, adjustedDemand: Math.round(base * (1 + mult)) };
-  }, [flats, occupants, amenities]);
+  // ── Live demand calculation — delegates to the canonical formula in waterConstants
+  // Layers applied in sequence:
+  //   1. baseDemand    = flats × occupants × IS_LPCD
+  //   2. afterAmenities = base × (1 + amenity multipliers)
+  //   3. afterUFW      = afterAmenities × 1.15  [if includeLosses]
+  //   4. adjustedDemand = afterUFW × 1.10        [peak-demand buffer, always applied]
+  const { baseDemand, afterAmenities, adjustedDemand } = useMemo(() => {
+    const amenityMultiplier = AMENITY_OPTIONS.reduce(
+      (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
+      0,
+    );
+    return calculateCanonicalDemand({
+      numFlats: Number(flats),
+      occupantsPerFlat: Number(occupants),
+      lpcd: IS_LPCD,
+      amenityMultiplier,
+      includeLosses,
+    });
+  }, [flats, occupants, amenities, includeLosses]);
+
+  // Derived: effective percentage multiplier applied before the peak buffer.
+  // The canonical formula compounds the percentages: (1 + amenityMult) * (1 + UFW_LOSS_FACTOR)
+  const effectivePercentage = useMemo(() => {
+    const amenityPart = AMENITY_OPTIONS.reduce(
+      (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
+      0,
+    );
+    const ufwMultiplier = includeLosses ? (1 + UFW_LOSS_FACTOR) : 1;
+    const combinedMultiplier = (1 + amenityPart) * ufwMultiplier;
+    return (combinedMultiplier - 1) * 100;
+  }, [amenities, includeLosses]);
 
   // ── Billing totals
-  const { totalTankerSpend, totalMunicipal, avgMonthly } = useMemo(() => {
+  const { totalTankerSpend, totalMunicipal, avgMonthly, totalTankerVolume } = useMemo(() => {
     const tankerSpend = billingRows.reduce((s, r) => s + Number(r.tankers || 0) * Number(r.costPerTanker || 0), 0);
     const municipal = billingRows.reduce((s, r) => s + Number(r.bill || 0), 0);
+    const volume = billingRows.reduce((s, r) => s + Number(r.tankers || 0) * Number(r.tankerCapacity || 0), 0);
     const avg = billingRows.length ? Math.round((tankerSpend + municipal) / billingRows.length) : 0;
-    return { totalTankerSpend: tankerSpend, totalMunicipal: municipal, avgMonthly: avg };
+    return { totalTankerSpend: tankerSpend, totalMunicipal: municipal, avgMonthly: avg, totalTankerVolume: volume };
   }, [billingRows]);
 
   // ── Sync computed totals to global context whenever they change ──
@@ -111,16 +149,31 @@ export default function VirtualMeter() {
     setCtxSocietyName(societyName);
     setCtxFlats(Number(flats));
     setCtxOccupants(Number(occupants));
-    setTotalTankerSpend(totalTankerSpend);
-    setTotalMunicipal(totalMunicipal);
-    setBillingMonths(billingRows.length || 1);
-  }, [societyName, flats, occupants, totalTankerSpend, totalMunicipal, billingRows.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    
+    if (useMeteredData) {
+      const multipliers = { 'Monthly': 12, 'Quarterly': 4, 'Half-Yearly': 2, 'Yearly': 1 };
+      const m = multipliers[meteredFrequency] || 4;
+      setTotalTankerSpend(Number(meteredTanker || 0) * m);
+      setTotalMunicipal(Number(meteredBill || 0) * m);
+      setBillingMonths(12);
+      setAnnualDemand(Number(meteredConsumption || 0) * m);
+    } else {
+      setTotalTankerSpend(totalTankerSpend);
+      setTotalMunicipal(totalMunicipal);
+      setBillingMonths(billingRows.length || 1);
+      setAnnualDemand(adjustedDemand * 365);
+    }
+  }, [
+    societyName, flats, occupants, totalTankerSpend, totalMunicipal,
+    billingRows.length, adjustedDemand, useMeteredData,
+    meteredFrequency, meteredConsumption, meteredBill, meteredTanker
+  ]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Row handlers
   const addRow = () => {
     setBillingRows((prev) => [
       ...prev,
-      { id: ++nextId, month: 'July', year: '2025', bill: '', tankers: 0, costPerTanker: '1500' },
+      { id: ++nextId, month: 'July', year: '2025', bill: '', tankers: 0, costPerTanker: '1500', tankerCapacity: 10000 },
     ]);
   };
 
@@ -188,7 +241,7 @@ export default function VirtualMeter() {
               <Calculator size={15} className="text-blue-500 flex-shrink-0" />
               <div>
                 <p className="text-sm font-bold text-blue-700">{baseDemand.toLocaleString('en-IN')} L / day</p>
-                <p className="text-xs text-blue-400">{flats} flats × {occupants} occ × 135 LPCD</p>
+                <p className="text-xs text-blue-400">{flats} flats × {occupants} occ × {IS_LPCD} LPCD</p>
               </div>
             </div>
           </div>
@@ -208,15 +261,19 @@ export default function VirtualMeter() {
             </div>
           </div>
 
-          {/* Adjusted Demand */}
-          {totalMultiplier > 0 && (
+          {/* Adjusted Demand — shown whenever any multiplier is active */}
+          {effectivePercentage > 0 && (
             <div className="lg:col-span-3">
               <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3.5 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <TrendingUp size={16} className="text-amber-600" />
                   <div>
-                    <p className="text-sm font-semibold text-amber-800">Adjusted Daily Demand (with amenities)</p>
-                    <p className="text-xs text-amber-600">+{Math.round(totalMultiplier * 100)}% multiplier applied</p>
+                    <p className="text-sm font-semibold text-amber-800">Adjusted Daily Demand</p>
+                    <p className="text-xs text-amber-600">
+                      +{Math.round(effectivePercentage)}% compounded
+                      (Amenities{includeLosses ? ' & 15% UFW losses' : ''})
+                      · then ×1.10 peak buffer
+                    </p>
                   </div>
                 </div>
                 <p className="text-xl font-extrabold text-amber-700">{adjustedDemand.toLocaleString('en-IN')} L/day</p>
@@ -224,29 +281,76 @@ export default function VirtualMeter() {
             </div>
           )}
 
-          {/* Smart Meters Toggle */}
+          {/* Real-World Losses (UFW) Toggle */}
           <div className="lg:col-span-3">
             <div className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5">
               <div className="flex items-center gap-2">
-                <Zap size={16} className="text-slate-400" />
+                <Droplets size={16} className="text-slate-400" />
                 <div>
-                  <p className="text-sm font-medium text-slate-700">Smart Meters Installed?</p>
-                  <p className="text-xs text-slate-400">Enable for real-time IoT data integration</p>
+                  <p className="text-sm font-medium text-slate-700">Include Distribution Losses (UFW)?</p>
+                  <p className="text-xs text-slate-400">Adds 15% standard Unaccounted For Water loss for real-world accuracy</p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${smartMeters ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
-                  {smartMeters ? 'Active' : 'Off'}
+                <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${includeLosses ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                  {includeLosses ? '+15% Active' : 'Off'}
                 </span>
-                <ToggleSwitch checked={smartMeters} onChange={() => setSmartMeters(!smartMeters)} />
+                <ToggleSwitch checked={includeLosses} onChange={() => setIncludeLosses(!includeLosses)} />
               </div>
+            </div>
+          </div>
+
+          {/* Actual Metered Data Toggle */}
+          <div className="lg:col-span-3">
+            <div className="flex flex-col bg-slate-50 border border-slate-200 rounded-xl overflow-hidden transition-all">
+              <div className="flex items-center justify-between px-4 py-3.5">
+                <div className="flex items-center gap-2">
+                  <Zap size={16} className="text-slate-400" />
+                  <div>
+                    <p className="text-sm font-medium text-slate-700">Use Actual Metered Data?</p>
+                    <p className="text-xs text-slate-400">Override theoretical math with your actual metered bills</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${useMeteredData ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                    {useMeteredData ? 'Active' : 'Off'}
+                  </span>
+                  <ToggleSwitch checked={useMeteredData} onChange={() => setUseMeteredData(!useMeteredData)} />
+                </div>
+              </div>
+              
+              {useMeteredData && (
+                <div className="px-5 py-5 border-t border-slate-200 bg-blue-50/50 grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Bill Frequency</label>
+                    <select value={meteredFrequency} onChange={(e) => setMeteredFrequency(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                      <option>Monthly</option>
+                      <option>Quarterly</option>
+                      <option>Half-Yearly</option>
+                      <option>Yearly</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Consumption (L / {meteredFrequency.split('-')[0]})</label>
+                    <input type="number" min="0" value={meteredConsumption} onChange={(e) => setMeteredConsumption(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 450000" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Municipal Bill (₹)</label>
+                    <input type="number" min="0" value={meteredBill} onChange={(e) => setMeteredBill(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 45000" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Tanker Spend (₹)</label>
+                    <input type="number" min="0" value={meteredTanker} onChange={(e) => setMeteredTanker(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 20000" />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
 
       {/* ── Card 2: Historical Billing Logs ── */}
-      <div className="bg-white rounded-2xl shadow-md p-6">
+      <div className={`bg-white rounded-2xl shadow-md p-6 transition-all duration-300 ${useMeteredData ? 'opacity-40 pointer-events-none grayscale-[50%]' : ''}`}>
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
@@ -273,6 +377,7 @@ export default function VirtualMeter() {
                 <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5 rounded-l-xl">Month & Year</th>
                 <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Municipal Bill (₹)</th>
                 <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Tankers Bought</th>
+                <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Capacity (L)</th>
                 <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Cost / Tanker (₹)</th>
                 <th className="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-3 py-2.5">Tanker Total</th>
                 <th className="px-3 py-2.5 rounded-r-xl"></th>
@@ -333,6 +438,19 @@ export default function VirtualMeter() {
                       </div>
                     </td>
 
+                    {/* Tanker Capacity */}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center">
+                        <input
+                          type="number"
+                          step="1000"
+                          value={row.tankerCapacity}
+                          onChange={(e) => updateRow(row.id, 'tankerCapacity', e.target.value)}
+                          className="border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-20"
+                        />
+                      </div>
+                    </td>
+
                     {/* Cost per Tanker */}
                     <td className="px-3 py-2">
                       <div className="relative">
@@ -370,7 +488,7 @@ export default function VirtualMeter() {
         </div>
 
         {/* Summary row */}
-        <div className="mt-4 grid grid-cols-3 gap-3">
+        <div className="mt-4 grid grid-cols-4 gap-3">
           <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-center">
             <p className="text-xs text-slate-500 font-medium">Total Municipal Bills</p>
             <p className="text-lg font-bold text-slate-800 mt-0.5">{fmtINR(totalMunicipal)}</p>
@@ -382,6 +500,10 @@ export default function VirtualMeter() {
           <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-center">
             <p className="text-xs text-amber-600 font-medium">Avg Monthly Bleed</p>
             <p className="text-lg font-bold text-amber-700 mt-0.5">{fmtINR(avgMonthly)}</p>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-center">
+            <p className="text-xs text-blue-600 font-medium">Total Tanker Vol.</p>
+            <p className="text-lg font-bold text-blue-700 mt-0.5">{(totalTankerVolume / 1000).toLocaleString('en-IN')} kL</p>
           </div>
         </div>
       </div>

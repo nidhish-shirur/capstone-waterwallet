@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useMemo } from 'react';
+import { SEASONAL_WEIGHTS, calculateCanonicalDemand } from '../utils/waterConstants';
 
 // ─── Default seed values mirror the old hardcoded dummy data ─────────────────
 //   so the ROI Dashboard is never blank on first load.
@@ -32,7 +33,31 @@ export function WaterWalletProvider({ children }) {
   const [billingMonths,    setBillingMonths]      = useState(seedTotals.billingMonths);
 
   // ── Phase 2: Map Studio outputs ──
-  const [estimatedCapex, setEstimatedCapex] = useState(1200 * 0.80 * 450); // default tracedArea=1200
+  // One-time parametric capex in ₹
+  const [estimatedCapex,  setEstimatedCapex]  = useState(1200 * 0.80 * 450);
+  // Annual harvestable yield in litres (Turf area × rainfall × runoff)
+  const [annualYield,     setAnnualYield]     = useState(0);
+  // Annual water demand in litres — synced from VirtualMeter for Phase 3 badge.
+  // Seed = same defaults as the VirtualMeter initial state (50 flats, 4 occ,
+  // UFW on, no amenities) computed through the canonical demand function so
+  // the seed and the live value are always produced by the same formula.
+  const defaultDemandSeed = calculateCanonicalDemand({
+    numFlats: 50,
+    occupantsPerFlat: 4,
+    includeLosses: true,
+    amenityMultiplier: 0,
+  }).adjustedDemand * 365;
+  const [annualDemand,    setAnnualDemand]    = useState(defaultDemandSeed);
+  // Monthly rainfall mm array (Jan–Dec, 12 values) for bar chart + monsoon score
+  const [monthlyRainfall, setMonthlyRainfall] = useState(Array(12).fill(0));
+  // Capex rate ₹/m² — adjustable via ROI Dashboard sensitivity slider
+  const [capexRatePerSqm, setCapexRatePerSqm] = useState(600);
+
+  // ── Derived State ──
+  const monthlyDemand = useMemo(() => {
+    const sumWeights = SEASONAL_WEIGHTS.reduce((a, b) => a + b, 0);
+    return SEASONAL_WEIGHTS.map(w => annualDemand * (w / sumWeights));
+  }, [annualDemand]);
 
   const value = {
     // Phase 1
@@ -45,6 +70,11 @@ export function WaterWalletProvider({ children }) {
 
     // Phase 2
     estimatedCapex,   setEstimatedCapex,
+    annualYield,      setAnnualYield,
+    annualDemand,     setAnnualDemand,
+    monthlyDemand,
+    monthlyRainfall,  setMonthlyRainfall,
+    capexRatePerSqm,  setCapexRatePerSqm,
   };
 
   return (

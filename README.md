@@ -19,10 +19,11 @@ The core problem it solves: most housing societies in MMR know they're overspend
 | 🏗️ **Virtual Meter** | Configure society parameters (flats, occupants, amenities) to compute baseline daily water demand using IS:1172 (135 LPCD) — with live adjustment multipliers for amenities |
 | 🧾 **Billing Log Table** | Editable month-by-month historical log of municipal bills + private tanker procurement. Auto-highlights months with abnormally high tanker reliance |
 | 🗺️ **Map Studio** | Click-to-trace polygon tool on a satellite map (Leaflet + ESRI World Imagery) to measure rooftop catchment area in real-time using Turf.js geometry |
-| 🌧️ **Live Weather** | Fetches 10-year daily precipitation data from Open-Meteo archive API (2015–2024) for Thane, MH to compute a hydrologically accurate annual rainfall average |
-| 📐 **RWH Capex Estimator** | Calculates parametric CAPEX at ₹600/m² (MMR DSR rate) applying a 0.90 runoff coefficient and 20% obstacle deduction — methodology sourced from peer-reviewed literature |
-| 📈 **ROI Simulator** | 10-year compounding financial model: "Cost of Doing Nothing" (8% tanker inflation + 5% municipal tax escalation) vs. "Cost with RWH" (3% AMC). Plots break-even intersection dynamically |
-| 🔁 **Live Context Propagation** | All three views are connected via React Context — changes in Step 1 instantly feed into the ROI model in Step 3 |
+| 🌧️ **Live Weather & Monsoon Tracking** | Fetches 10-year daily precipitation data from Open-Meteo archive API (2015–2024) for Thane, MH to compute annual average, monthly distribution, and a Monsoon Dependency Score |
+| 📐 **RWH Capex Estimator** | Calculates parametric CAPEX applying a 0.90 runoff coefficient and 20% obstacle deduction — with a live sensitivity slider (₹400–₹800/m²) |
+| 📈 **Scenario-Based ROI Simulator** | 10-year compounding financial model overlaying three tanker inflation scenarios (Conservative 6%, Current 8%, High-Risk 12%) vs RWH cost. Includes a self-sufficiency rating and dynamic break-even plotting |
+| 📄 **Dynamic PDF Reports** | Auto-generates a printable HTML/PDF report combining financial and hydrological findings via client-side formatting |
+| 🔁 **Live Context Propagation** | All three views are connected via React Context — changes in Step 1 instantly feed into the ROI model and self-sufficiency indicators in Step 3 |
 
 ---
 
@@ -52,9 +53,9 @@ src/
 State flows top-down via a single `WaterWalletContext` provider:
 
 ```
-VirtualMeter  →  societyName, flats, occupants, totalSpend, billingMonths
-MapStudio     →  estimatedCapex
-ROIDashboard  ←  Reads all of the above to run the financial model
+VirtualMeter  →  societyName, flats, occupants, totalSpend, billingMonths, annualDemand
+MapStudio     →  estimatedCapex, annualYield, monthlyRainfall
+ROIDashboard  ←  Reads all of the above to run the financial model and update self-sufficiency badge
 ```
 
 No external state library (Redux, Zustand) is used — the problem scope is well-suited for React's built-in Context + `useMemo` hooks.
@@ -138,10 +139,10 @@ npm run preview
 Enter your society's name, number of flats, and average occupants. The tool instantly computes your IS-standard baseline daily water demand. Check off water-heavy amenities (garden, pool, car wash) to apply demand multipliers. Then log month-by-month historical bills — municipal and private tankers — to establish your actual water spend.
 
 ### Step 2 — Map Studio
-The app opens a high-resolution satellite view centered on Thane, MH. Click directly on your building's rooftop to place polygon vertices. Once 3+ points are plotted, Turf.js calculates the catchment area in real-time. The sidebar simultaneously shows live annual rainfall (fetched from Open-Meteo) and derives the harvestable yield and parametric CAPEX — all updating with every click.
+The app opens a high-resolution satellite view centered on Thane, MH. Click directly on your building's rooftop to place polygon vertices. Once 3+ points are plotted, Turf.js calculates the catchment area in real-time. The sidebar simultaneously shows live annual rainfall (fetched from Open-Meteo) alongside a monthly rainfall distribution chart, and calculates your Monsoon Dependency Score. It derives the harvestable yield and parametric CAPEX — all updating with every click.
 
 ### Step 3 — ROI Dashboard
-The dashboard reads all data from the previous two steps and runs a 10-year compounding simulation. Three KPI cards show the cumulative "water bleed," the RWH project budget, and the projected break-even year. The Recharts graph plots both cost trajectories; the green break-even line appears dynamically at the intersection point.
+The dashboard reads all data from the previous two steps to calculate your rooftop self-sufficiency and run a 10-year compounding simulation. Three KPI cards show the cumulative "water bleed," the RWH project budget, and the projected break-even year range. You can adjust the CAPEX sensitivity slider to see real-time impact on the project budget. The Recharts graph plots three "Cost of Doing Nothing" trajectories (6%, 8%, 12% inflation) against the RWH curve. Finally, users can download a dynamic PDF report of all findings.
 
 ---
 

@@ -64,3 +64,15 @@ input:checked + .toggle-slider:before {
 .recharts-tooltip-wrapper {
   outline: none;
 }
+
+/* MapStudio Crosshair Cursor */
+.crosshair-map.leaflet-container,
+.crosshair-map .leaflet-interactive {
+  cursor: crosshair !important;
+}
+
+/* Ensure grabbing cursor works when panning the map */
+.crosshair-map.leaflet-dragging,
+.crosshair-map.leaflet-dragging .leaflet-interactive {
+  cursor: grabbing !important;
+}
