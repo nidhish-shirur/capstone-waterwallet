@@ -9,9 +9,13 @@ class SocietyBaselineRequest(BaseModel):
     num_flats: int = Field(..., gt=0, description="Total number of flats in the society")
     occupants_per_flat: float = Field(default=3.5, gt=0)
     lpcd_override: Optional[float] = Field(default=None, gt=0, le=1000, description="Override IS 1172 LPCD value")
+    amenity_multiplier: float = Field(default=0.0, ge=0.0)
+    include_losses: bool = Field(default=True)
 
 class SocietyBaselineResponse(BaseModel):
     total_occupants: int
+    base_demand_lpd: float
+    after_amenities_lpd: float
     daily_demand_lpd: float
     daily_demand_with_buffer_lpd: float
 
@@ -23,6 +27,7 @@ class CatchmentRequest(BaseModel):
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
     roof_area_sqm: float = Field(..., gt=0, description="Usable roof catchment area in m²")
+    roof_surface_type: Optional[str] = Field(default="concrete", description="Type of roof surface")
 
 class CatchmentResponse(BaseModel):
     annual_rainfall_mm: float
@@ -80,3 +85,83 @@ class ReportRequest(BaseModel):
     catchment_data: CatchmentResponse
     roi_data: ROIResponse
     society_name: Optional[str] = "Society"
+
+
+# ---------------------------------------------------------------------------
+# Database CRUD Schemas
+# ---------------------------------------------------------------------------
+from datetime import datetime
+
+class SocietyCreate(BaseModel):
+    name: str = Field(..., description="Name of the society")
+    pincode: str = Field(..., description="Pincode of the society")
+    num_flats: int = Field(..., gt=0, description="Total number of flats")
+    occupants: float = Field(default=3.5, gt=0)
+    roof_surface_type: Optional[str] = Field(default=None, description="Type of roof surface")
+
+class SocietyResponse(BaseModel):
+    id: int
+    name: str
+    pincode: str
+    num_flats: int
+    occupants: float
+    roof_surface_type: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+class BillingEntryCreate(BaseModel):
+    month: int = Field(..., ge=1, le=12)
+    year: int = Field(...)
+    municipal_bill: Optional[float] = None
+    tankers: Optional[int] = None
+    cost_per_tanker: Optional[float] = None
+    tanker_capacity_l: Optional[float] = None
+
+class BillingEntryResponse(BaseModel):
+    id: int
+    society_id: int
+    month: int
+    year: int
+    municipal_bill: Optional[float]
+    tankers: Optional[int]
+    cost_per_tanker: Optional[float]
+    tanker_capacity_l: Optional[float]
+
+    model_config = {"from_attributes": True}
+
+class SocietyDetailResponse(BaseModel):
+    id: int
+    name: str
+    pincode: str
+    num_flats: int
+    occupants: float
+    roof_surface_type: Optional[str]
+    created_at: datetime
+    billing_entries: list[BillingEntryResponse]
+
+    model_config = {"from_attributes": True}
+
+class SocietyUpdate(BaseModel):
+    name: Optional[str] = None
+    pincode: Optional[str] = None
+    num_flats: Optional[int] = None
+    occupants: Optional[float] = None
+    roof_surface_type: Optional[str] = None
+
+class SocietyAnalysisCreate(BaseModel):
+    estimated_capex: Optional[float] = None
+    annual_yield_l: Optional[float] = None
+    annual_demand_l: Optional[float] = None
+    computed_data: Optional[dict] = None
+
+class SocietyAnalysisResponse(BaseModel):
+    id: int
+    society_id: int
+    estimated_capex: Optional[float]
+    annual_yield_l: Optional[float]
+    annual_demand_l: Optional[float]
+    computed_data: Optional[dict]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

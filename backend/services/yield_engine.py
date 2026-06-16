@@ -1,7 +1,7 @@
-from models.constants import RUNOFF_COEFFICIENT, USABILITY_FACTOR
+from models.constants import ROOF_RUNOFF_COEFFICIENTS, USABILITY_FACTOR
 
 
-def calculate_yield(rain_mm: float, roof_area_sqm: float) -> float:
+def calculate_yield(rain_mm: float, roof_area_sqm: float, roof_surface_type: str = "concrete") -> float:
     """
     Calculate rainwater yield for a given rainfall depth and roof area.
 
@@ -14,9 +14,11 @@ def calculate_yield(rain_mm: float, roof_area_sqm: float) -> float:
     Args:
         rain_mm: Rainfall depth in millimetres.
         roof_area_sqm: Usable roof catchment area in square metres.
+        roof_surface_type: Type of roof surface (e.g. concrete, metal, gravel, tiles).
 
     Returns:
         Yield in litres.
     """
-    yield_litres = rain_mm * roof_area_sqm * RUNOFF_COEFFICIENT * USABILITY_FACTOR
+    coeff = ROOF_RUNOFF_COEFFICIENTS.get((roof_surface_type or "concrete").lower(), 0.90)
+    yield_litres = rain_mm * roof_area_sqm * coeff * USABILITY_FACTOR
     return round(yield_litres, 2)

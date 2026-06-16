@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import society, geospatial, roi, report
+from routers import geospatial, roi, report, societies
 
 app = FastAPI(
     title="WaterWallet API",
@@ -23,7 +23,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
-app.include_router(society.router,    prefix="/api/society",    tags=["Society"])
+app.include_router(societies.router,  prefix="/api/societies",  tags=["Societies"])
 app.include_router(geospatial.router, prefix="/api/catchment",  tags=["Geospatial"])
 app.include_router(roi.router,        prefix="/api/roi",         tags=["ROI"])
 app.include_router(report.router,     prefix="/api/report",      tags=["Report"])

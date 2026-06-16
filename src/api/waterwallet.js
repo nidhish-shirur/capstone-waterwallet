@@ -18,7 +18,7 @@ const api = axios.create({
  * @returns {Promise<{ total_occupants: number, daily_demand_lpd: number, daily_demand_with_buffer_lpd: number }>}
  */
 export const fetchSocietyBaseline = (payload) =>
-  api.post("/api/society/baseline", payload).then((r) => r.data);
+  api.post("/api/societies/baseline", payload).then((r) => r.data);
 
 // ---------------------------------------------------------------------------
 // Geospatial — rainfall fetch + yield calculation
@@ -63,5 +63,52 @@ export const downloadReport = async (payload) => {
   link.remove();
   window.URL.revokeObjectURL(url);
 };
+
+// ---------------------------------------------------------------------------
+// Database CRUD Operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a new society in the database.
+ * @param {{ name: string, pincode: string, num_flats: number, occupants?: number, roof_surface_type?: string }} payload
+ * @returns {Promise<object>}
+ */
+export const createSociety = (payload) =>
+  api.post("/api/societies/", payload).then((r) => r.data);
+
+/**
+ * Gets a society and its billing entries from the database.
+ * @param {number} id
+ * @returns {Promise<object>}
+ */
+export const getSociety = (id) =>
+  api.get(`/api/societies/${id}`).then((r) => r.data);
+
+/**
+ * Updates an existing society.
+ * @param {number} id
+ * @param {object} payload
+ * @returns {Promise<object>}
+ */
+export const updateSociety = (id, payload) =>
+  api.put(`/api/societies/${id}`, payload).then((r) => r.data);
+
+/**
+ * Saves or updates billing entries for a society.
+ * @param {number} id
+ * @param {Array} payload
+ * @returns {Promise<Array>}
+ */
+export const saveBillingEntries = (id, payload) =>
+  api.post(`/api/societies/${id}/billing`, payload).then((r) => r.data);
+
+/**
+ * Saves a computed analysis snapshot for a society.
+ * @param {number} id
+ * @param {object} payload
+ * @returns {Promise<object>}
+ */
+export const saveSocietyAnalysis = (id, payload) =>
+  api.post(`/api/societies/${id}/analyses`, payload).then((r) => r.data);
 
 export default api;

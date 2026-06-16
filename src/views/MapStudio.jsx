@@ -13,6 +13,9 @@ import {
   ComposedChart, Line, Legend
 } from 'recharts';
 import { useWaterWallet } from '../context/WaterWalletContext';
+import { fetchCatchmentData } from '../api/waterwallet';
+import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
+import { formatLitres, formatRupees, formatRainfall, formatArea } from '../utils/formatters';
 
 // ─── Fix Leaflet's broken default marker icons in Vite ───────────────────────
 delete L.Icon.Default.prototype._getIconUrl;
@@ -26,7 +29,6 @@ L.Icon.Default.mergeOptions({
 const THANE_CENTER = [19.2183, 72.9781];
 const CAPEX_RATE_PER_SQM = 600;  // ₹ per m² (MMR parametric DSR rate)
 const OBSTACLE_FACTOR = 0.80; // 20% deduction for roof obstacles
-const RUNOFF_COEFF = 0.90; // Concrete runoff coefficient
 
 // Open-Meteo archive: 10 full years of daily precipitation for Thane
 const WEATHER_API_URL =
@@ -51,7 +53,7 @@ function MapClickHandler({ onMapClick }) {
   return null;
 }
 
-const fmt = (num) => Number(Math.round(num)).toLocaleString('en-IN');
+
 
 // ─── Monthly Rainfall vs Demand Chart ───────────────────────────────────────
 const RainfallDemandChart = memo(function RainfallDemandChart({ monthlyMm, monthlyDemand }) {
@@ -60,7 +62,7 @@ const RainfallDemandChart = memo(function RainfallDemandChart({ monthlyMm, month
     rain: Math.round(monthlyMm[i] || 0),
     demand: monthlyDemand ? Math.round((monthlyDemand[i] || 0) / 1000) : 0 // kL
   }));
-  const isMonsoon = (_, idx) => MONSOON_IDX.includes(idx);
+  // isMonsoon helper defined but unused in charts
 
   return (
     <ResponsiveContainer width="100%" height={160}>
@@ -134,6 +136,7 @@ export default function MapStudio() {
     setMonthlyRainfall,
     flats, occupants,
     monthlyDemand,
+    roofSurfaceType,
   } = useWaterWallet();
 
   // ─── Live weather state ──────────────────────────────────────────────────
@@ -188,6 +191,17 @@ export default function MapStudio() {
   const clearPoints = () => setPoints([]);
   const undoPoint = () => setPoints((prev) => prev.slice(0, -1));
 
+  // ─── Centroid computation via Turf.js ────────────────────────────────────
+  const centroid = useMemo(() => {
+    if (points.length < 3) return null;
+    const turfCoords = points.map(([lat, lng]) => [lng, lat]);
+    turfCoords.push(turfCoords[0]);
+    try {
+      const cent = turf.centroid(turf.polygon([turfCoords]));
+      return [cent.geometry.coordinates[1], cent.geometry.coordinates[0]]; // [lat, lng]
+    } catch { return null; }
+  }, [points]);
+
   // ─── Step 1: Polygon area via Turf.js ────────────────────────────────────
   const tracedArea = useMemo(() => {
     if (points.length < 3) return 0;
@@ -199,12 +213,41 @@ export default function MapStudio() {
   }, [points]);
 
   // ─── Step 2: Derived metrics ──────────────────────────────────────────────
-  const { usableArea, maxYield, estimatedCapex } = useMemo(() => {
+  const { maxYield, estimatedCapex } = useMemo(() => {
     const usable = tracedArea * OBSTACLE_FACTOR;
-    const yld = usable * effectiveRainfall * RUNOFF_COEFF;
+    const runoffCoeff = ROOF_RUNOFF_COEFFICIENTS[roofSurfaceType] || 0.90;
+    const yld = usable * effectiveRainfall * runoffCoeff;
     const cost = usable * CAPEX_RATE_PER_SQM;
-    return { usableArea: usable, maxYield: yld, estimatedCapex: cost };
-  }, [tracedArea, effectiveRainfall]);
+    return { maxYield: yld, estimatedCapex: cost };
+  }, [tracedArea, effectiveRainfall, roofSurfaceType]);
+
+  // ─── State to hold backend-computed catchment yield ──────────────────────
+  const [backendYield, setBackendYield] = useState(0);
+
+  // ─── Fetch rainfall data dynamically from backend based on centroid coordinates
+  useEffect(() => {
+    if (!centroid || tracedArea <= 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setBackendYield(0);
+      return;
+    }
+
+    fetchCatchmentData({
+      latitude: centroid[0],
+      longitude: centroid[1],
+      roof_area_sqm: tracedArea,
+      roof_surface_type: roofSurfaceType,
+    })
+      .then((data) => {
+        setAnnualRainfall(data.annual_rainfall_mm);
+        setMonthlyMm(data.monthly_rainfall_mm);
+        setBackendYield(data.annual_yield_litres);
+        setMonthlyRainfall(data.monthly_rainfall_mm);
+      })
+      .catch((err) => {
+        console.error("Backend catchment calculation error:", err);
+      });
+  }, [centroid, tracedArea, roofSurfaceType, setMonthlyRainfall]);
 
   // ─── Monsoon dependency score ─────────────────────────────────────────────
   const monsoonPct = useMemo(() => {
@@ -217,34 +260,34 @@ export default function MapStudio() {
   // ─── Step 3: Sync to global context ──────────────────────────────────────
   useEffect(() => {
     setEstimatedCapex(estimatedCapex);
-    setAnnualYield(maxYield);
+    setAnnualYield(backendYield || maxYield);
     setMonthlyRainfall(monthlyMm);
     // Annual demand in litres for self-sufficiency badge in Phase 3
     setAnnualDemand(Number(flats) * Number(occupants) * 135 * 365);
-  }, [estimatedCapex, maxYield, monthlyMm, flats, occupants]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [estimatedCapex, backendYield, maxYield, monthlyMm, flats, occupants]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── KPI sidebar cards ─────────────────────────────────────────────────────
   const liveMetrics = [
     {
       icon: Cloud,
       label: 'Live Rainfall Data',
-      value: weatherLoading ? 'Fetching…' : `${effectiveRainfall} mm`,
+      value: weatherLoading ? 'Fetching…' : formatRainfall(effectiveRainfall),
       unit: weatherError ? 'Thane fallback (IITM normals)' : '10-year avg (2015–2024) · Open-Meteo',
       color: 'text-blue-600', bg: 'bg-blue-50', highlight: false,
     },
     {
       icon: Maximize2, label: 'Traced Gross Area',
-      value: fmt(tracedArea), unit: 'm² (live from map)',
+      value: formatArea(tracedArea), unit: 'live from map',
       color: 'text-slate-700', bg: 'bg-slate-50', highlight: false,
     },
     {
       icon: Droplets, label: 'Max Harvestable Yield',
-      value: fmt(maxYield), unit: 'Litres / Year',
+      value: formatLitres(maxYield), unit: 'per year',
       color: 'text-teal-600', bg: 'bg-teal-50', highlight: false,
     },
     {
       icon: Landmark, label: 'Parametric RWH Capex',
-      value: `₹${fmt(estimatedCapex)}`, unit: 'Estimated Project Budget',
+      value: formatRupees(estimatedCapex), unit: 'Estimated Project Budget',
       color: 'text-blue-700', bg: 'bg-blue-50', highlight: true,
     },
   ];

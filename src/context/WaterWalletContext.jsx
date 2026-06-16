@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useMemo } from 'react';
 import { SEASONAL_WEIGHTS, calculateCanonicalDemand } from '../utils/waterConstants';
 
@@ -25,9 +26,12 @@ const WaterWalletContext = createContext(null);
 
 export function WaterWalletProvider({ children }) {
   // ── Phase 1: Virtual Meter outputs ──
+  const [societyId,        setSocietyId]        = useState(null);
   const [societyName,      setSocietyName]      = useState('Evergreen Heights CHS');
   const [flats,            setFlats]             = useState(50);
   const [occupants,        setOccupants]         = useState(4);
+  const [pincode,          setPincode]          = useState('400071');
+  const [roofSurfaceType,  setRoofSurfaceType]  = useState('concrete');
   const [totalTankerSpend, setTotalTankerSpend]  = useState(seedTotals.totalTankerSpend);
   const [totalMunicipal,   setTotalMunicipal]    = useState(seedTotals.totalMunicipal);
   const [billingMonths,    setBillingMonths]      = useState(seedTotals.billingMonths);
@@ -61,9 +65,12 @@ export function WaterWalletProvider({ children }) {
 
   const value = {
     // Phase 1
+    societyId,        setSocietyId,
     societyName,      setSocietyName,
     flats,            setFlats,
     occupants,        setOccupants,
+    pincode,          setPincode,
+    roofSurfaceType,  setRoofSurfaceType,
     totalTankerSpend, setTotalTankerSpend,
     totalMunicipal,   setTotalMunicipal,
     billingMonths,    setBillingMonths,

@@ -2,11 +2,13 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronRight, Building2, Zap, Plus, Trash2, Droplets, TrendingUp, Calculator } from 'lucide-react';
 import { useWaterWallet } from '../context/WaterWalletContext';
+import { fetchSocietyBaseline, createSociety, getSociety, updateSociety, saveBillingEntries } from '../api/waterwallet';
 import {
   IS_LPCD,
   UFW_LOSS_FACTOR,
   calculateCanonicalDemand,
 } from '../utils/waterConstants';
+import { formatRupees as fmtINR } from '../utils/formatters';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // IS_LPCD (135 L/person/day) is imported from waterConstants — single source
@@ -70,8 +72,7 @@ function AmenityCheckbox({ option, checked, onChange }) {
   );
 }
 
-// ─── Currency formatter ──────────────────────────────────────────────────────
-const fmtINR = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 let nextId = 100;
@@ -79,6 +80,12 @@ let nextId = 100;
 export default function VirtualMeter() {
   const navigate = useNavigate();
   const {
+    societyId,
+    setSocietyId,
+    pincode: ctxPincode,
+    setPincode: setCtxPincode,
+    roofSurfaceType: ctxRoofSurfaceType,
+    setRoofSurfaceType: setCtxRoofSurfaceType,
     setSocietyName: setCtxSocietyName,
     setFlats: setCtxFlats,
     setOccupants: setCtxOccupants,
@@ -86,12 +93,17 @@ export default function VirtualMeter() {
     setTotalMunicipal,
     setBillingMonths,
     setAnnualDemand,
+    societyName: ctxSocietyName,
+    flats: ctxFlats,
+    occupants: ctxOccupants,
   } = useWaterWallet();
 
   // ── Card 1 state
-  const [societyName, setSocietyName] = useState('Evergreen Heights CHS');
-  const [flats, setFlats] = useState(50);
-  const [occupants, setOccupants] = useState(4);
+  const [societyName, setSocietyName] = useState(ctxSocietyName || 'Evergreen Heights CHS');
+  const [flats, setFlats] = useState(ctxFlats || 50);
+  const [occupants, setOccupants] = useState(ctxOccupants || 4);
+  const [pincode, setPincode] = useState(ctxPincode || '400071');
+  const [roofSurfaceType, setRoofSurfaceType] = useState(ctxRoofSurfaceType || 'concrete');
   const [amenities, setAmenities] = useState({ garden: false, carwash: false, pool: false });
   const [includeLosses, setIncludeLosses] = useState(true); // 15% UFW (Unaccounted for Water)
   const [useMeteredData, setUseMeteredData] = useState(false);
@@ -99,6 +111,11 @@ export default function VirtualMeter() {
   const [meteredConsumption, setMeteredConsumption] = useState('');
   const [meteredBill, setMeteredBill] = useState('');
   const [meteredTanker, setMeteredTanker] = useState('');
+
+  // ── Database states
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null);
 
   // ── Card 2 state
   const [billingRows, setBillingRows] = useState(defaultBillingRows);
@@ -109,7 +126,7 @@ export default function VirtualMeter() {
   //   2. afterAmenities = base × (1 + amenity multipliers)
   //   3. afterUFW      = afterAmenities × 1.15  [if includeLosses]
   //   4. adjustedDemand = afterUFW × 1.10        [peak-demand buffer, always applied]
-  const { baseDemand, afterAmenities, adjustedDemand } = useMemo(() => {
+  const { baseDemand, adjustedDemand } = useMemo(() => {
     const amenityMultiplier = AMENITY_OPTIONS.reduce(
       (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
       0,
@@ -144,11 +161,43 @@ export default function VirtualMeter() {
     return { totalTankerSpend: tankerSpend, totalMunicipal: municipal, avgMonthly: avg, totalTankerVolume: volume };
   }, [billingRows]);
 
+  // ── State to hold backend-computed annual demand (default to local calculation fallback)
+  const [backendDemand, setBackendDemand] = useState(adjustedDemand * 365);
+
+  // ── Fetch demand baseline from FastAPI backend ──
+  useEffect(() => {
+    if (!flats || !occupants) return;
+
+    const amenityMultiplier = AMENITY_OPTIONS.reduce(
+      (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
+      0,
+    );
+
+    const handler = setTimeout(() => {
+      fetchSocietyBaseline({
+        num_flats: Number(flats),
+        occupants_per_flat: Number(occupants),
+        amenity_multiplier: amenityMultiplier,
+        include_losses: includeLosses,
+      })
+        .then((data) => {
+          setBackendDemand(data.daily_demand_lpd * 365);
+        })
+        .catch((err) => {
+          console.error("Backend baseline calculation error:", err);
+        });
+    }, 250);
+
+    return () => clearTimeout(handler);
+  }, [flats, occupants, amenities, includeLosses]);
+
   // ── Sync computed totals to global context whenever they change ──
   useEffect(() => {
     setCtxSocietyName(societyName);
     setCtxFlats(Number(flats));
     setCtxOccupants(Number(occupants));
+    setCtxPincode(pincode);
+    setCtxRoofSurfaceType(roofSurfaceType);
     
     if (useMeteredData) {
       const multipliers = { 'Monthly': 12, 'Quarterly': 4, 'Half-Yearly': 2, 'Yearly': 1 };
@@ -161,13 +210,14 @@ export default function VirtualMeter() {
       setTotalTankerSpend(totalTankerSpend);
       setTotalMunicipal(totalMunicipal);
       setBillingMonths(billingRows.length || 1);
-      setAnnualDemand(adjustedDemand * 365);
+      setAnnualDemand(backendDemand);
     }
   }, [
-    societyName, flats, occupants, totalTankerSpend, totalMunicipal,
-    billingRows.length, adjustedDemand, useMeteredData,
-    meteredFrequency, meteredConsumption, meteredBill, meteredTanker
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+    societyName, flats, occupants, pincode, roofSurfaceType, totalTankerSpend, totalMunicipal,
+    billingRows.length, backendDemand, useMeteredData,
+    meteredFrequency, meteredConsumption, meteredBill, meteredTanker,
+    setAnnualDemand, setBillingMonths, setCtxFlats, setCtxOccupants, setCtxPincode, setCtxRoofSurfaceType, setCtxSocietyName, setTotalMunicipal, setTotalTankerSpend
+  ]);
 
   // ── Row handlers
   const addRow = () => {
@@ -182,11 +232,99 @@ export default function VirtualMeter() {
   const updateRow = (id, field, value) =>
     setBillingRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
 
+  // ── Load society data on mount if societyId is present ──
+  useEffect(() => {
+    if (societyId) {
+      setIsLoading(true);
+      getSociety(societyId)
+        .then((data) => {
+          setSocietyName(data.name);
+          setFlats(data.num_flats);
+          setOccupants(data.occupants);
+          setPincode(data.pincode);
+          if (data.roof_surface_type) {
+            setRoofSurfaceType(data.roof_surface_type);
+          }
+          if (data.billing_entries && data.billing_entries.length > 0) {
+            const mappedRows = data.billing_entries.map((entry) => ({
+              id: entry.id,
+              month: MONTHS[entry.month - 1] || 'January',
+              year: String(entry.year),
+              bill: entry.municipal_bill ? String(entry.municipal_bill) : '',
+              tankers: entry.tankers || 0,
+              costPerTanker: entry.cost_per_tanker ? String(entry.cost_per_tanker) : '1500',
+              tankerCapacity: entry.tanker_capacity_l || 10000,
+            }));
+            setBillingRows(mappedRows);
+          }
+        })
+        .catch((err) => {
+          console.error("Error loading society:", err);
+        })
+        .finally(() => {
+          setIsLoading(false);
+        });
+    }
+  }, [societyId]);
+
+  // ── Save/Update society data and billing rows ──
+  const handleSave = async () => {
+    setIsSaving(true);
+    setSaveStatus(null);
+    try {
+      let savedSociety;
+      const societyPayload = {
+        name: societyName,
+        pincode: pincode,
+        num_flats: Number(flats),
+        occupants: Number(occupants),
+        roof_surface_type: roofSurfaceType,
+      };
+
+      if (societyId) {
+        savedSociety = await updateSociety(societyId, societyPayload);
+      } else {
+        savedSociety = await createSociety(societyPayload);
+        setSocietyId(savedSociety.id);
+      }
+
+      // Map UI billing rows to API schema format
+      const billingPayload = billingRows.map((row) => {
+        const monthIndex = MONTHS.indexOf(row.month) + 1;
+        return {
+          month: monthIndex > 0 ? monthIndex : 1,
+          year: Number(row.year),
+          municipal_bill: row.bill ? Number(row.bill) : null,
+          tankers: Number(row.tankers || 0),
+          cost_per_tanker: row.costPerTanker ? Number(row.costPerTanker) : null,
+          tanker_capacity_l: Number(row.tankerCapacity || 10000),
+        };
+      });
+
+      await saveBillingEntries(savedSociety.id, billingPayload);
+      setSaveStatus({ type: 'success', message: 'Society data saved successfully!' });
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (err) {
+      console.error("Error saving society:", err);
+      setSaveStatus({ type: 'error', message: 'Failed to save data. Please try again.' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
     <div className="p-8 space-y-6">
 
       {/* ── Card 1: Society Baseline Data ── */}
-      <div className="bg-white rounded-2xl shadow-md p-6">
+      <div className="bg-white rounded-2xl shadow-md p-6 relative">
+        {isLoading && (
+          <div className="absolute inset-0 bg-white/75 backdrop-blur-[1px] flex items-center justify-center rounded-2xl z-10">
+            <div className="flex items-center gap-2 text-blue-700 font-semibold text-sm">
+              <span className="w-5 h-5 border-2 border-blue-700 border-t-transparent rounded-full animate-spin"></span>
+              Loading society data...
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
             <Building2 size={20} className="text-blue-600" />
@@ -199,7 +337,7 @@ export default function VirtualMeter() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {/* Society Name */}
-          <div className="lg:col-span-3 space-y-1.5">
+          <div className="lg:col-span-2 space-y-1.5">
             <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Society Name</label>
             <input
               type="text"
@@ -207,6 +345,19 @@ export default function VirtualMeter() {
               onChange={(e) => setSocietyName(e.target.value)}
               placeholder="e.g. Evergreen Heights CHS"
               className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+            />
+          </div>
+
+          {/* Pincode */}
+          <div className="lg:col-span-1 space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Pincode</label>
+            <input
+              type="text"
+              value={pincode}
+              onChange={(e) => setPincode(e.target.value)}
+              placeholder="e.g. 400071"
+              maxLength={6}
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
             />
           </div>
 
@@ -234,13 +385,28 @@ export default function VirtualMeter() {
             />
           </div>
 
-          {/* Live Demand Calculator */}
+          {/* Roof Surface Type Dropdown */}
           <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Roof Surface Type</label>
+            <select
+              value={roofSurfaceType}
+              onChange={(e) => setRoofSurfaceType(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 transition"
+            >
+              <option value="concrete">Concrete (Runoff: 0.90)</option>
+              <option value="metal">Metal (Runoff: 0.90)</option>
+              <option value="gravel">Gravel (Runoff: 0.45)</option>
+              <option value="tiles">Clay Tiles (Runoff: 0.75)</option>
+            </select>
+          </div>
+
+          {/* Live Demand Calculator */}
+          <div className="lg:col-span-3 space-y-1.5">
             <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Base Daily Demand</label>
-            <div className="border border-blue-200 bg-blue-50 rounded-xl px-4 py-2.5 flex items-center gap-2">
-              <Calculator size={15} className="text-blue-500 flex-shrink-0" />
+            <div className="border border-blue-200 bg-blue-50 rounded-xl px-4 py-3 flex items-center gap-3">
+              <Calculator size={18} className="text-blue-500 flex-shrink-0" />
               <div>
-                <p className="text-sm font-bold text-blue-700">{baseDemand.toLocaleString('en-IN')} L / day</p>
+                <p className="text-base font-bold text-blue-700">{baseDemand.toLocaleString('en-IN')} L / day</p>
                 <p className="text-xs text-blue-400">{flats} flats × {occupants} occ × {IS_LPCD} LPCD</p>
               </div>
             </div>
@@ -508,10 +674,31 @@ export default function VirtualMeter() {
         </div>
       </div>
 
-      {/* ── Action Button ── */}
-      <div className="flex justify-end">
+      {/* ── Action Buttons ── */}
+      <div className="flex justify-end items-center gap-4">
+        {saveStatus && (
+          <div className={`flex items-center text-xs font-semibold px-3 py-2 rounded-xl border ${
+            saveStatus.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'
+          }`}>
+            {saveStatus.message}
+          </div>
+        )}
         <button
-          onClick={() => navigate('/map-studio')} // UPDATE THIS LINE
+          onClick={handleSave}
+          disabled={isSaving || isLoading}
+          className="flex items-center gap-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold px-5 py-3 rounded-xl shadow-sm hover:shadow transition-all duration-200 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isSaving ? (
+            <>
+              <span className="w-4 h-4 border-2 border-slate-700 border-t-transparent rounded-full animate-spin"></span>
+              Saving...
+            </>
+          ) : (
+            'Save Society Data'
+          )}
+        </button>
+        <button
+          onClick={() => navigate('/map-studio')}
           className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-semibold px-6 py-3 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 text-sm"
         >
           Process Data & Continue

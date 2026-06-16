@@ -30,6 +30,7 @@ export default function Sidebar() {
 
       {/* Nav Items */}
       <nav className="flex-1 px-3">
+        {/* eslint-disable-next-line no-unused-vars */}
         {navItems.map(({ id, label, icon: Icon }) => {
           const isActive = activeTab === id;
           return (

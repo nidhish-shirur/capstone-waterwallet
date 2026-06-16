@@ -28,9 +28,9 @@ These constants are the single source of truth for every demand calculation acro
 | `IS_LPCD` | `135 L/person/day` | IS 1172 — Code of Basic Requirements for Water Supply, residential with flush toilet + bath |
 | `UFW_LOSS_FACTOR` | `0.15` (15%) | CPHEEO norms — Unaccounted-For Water: pipe leakage, metering error, unregistered connections |
 | `DEMAND_BUFFER_FACTOR` | `1.10` (10%) | IS 1172 §4 — peak-hour surge and modelling uncertainty headroom |
-| `RUNOFF_COEFFICIENT` | `0.85` | Typical RCC (reinforced concrete) roof runoff fraction |
+| `RUNOFF_COEFFICIENT` | `0.90` | Unified RCC (reinforced concrete) roof runoff fraction (concrete default) |
 | `USABILITY_FACTOR` | `0.80` | Roof area after deducting equipment, shading, service zones |
-| `YIELD_FACTOR` | `0.85 × 0.80 = 0.68` | Combined: fraction of rainfall that becomes usable harvested water |
+| `YIELD_FACTOR` | `0.90 × 0.80 = 0.72` | Combined: fraction of rainfall that becomes usable harvested water |
 | `SEASONAL_WEIGHTS` | 12-element array | CPHEEO urban demand norms for peninsular India — relative monthly demand multipliers |
 
 ### Canonical Daily Demand Formula
@@ -59,7 +59,7 @@ Step 4 — Peak-demand buffer     [always applied]
 **JavaScript implementation:** `calculateCanonicalDemand()` in `waterConstants.js`  
 **Python implementation:** `calculate_demand()` in `backend/services/demand_engine.py`
 
-> **Note:** The backend currently applies only Steps 1 and 4 (base + buffer). Steps 2 and 3 are frontend-only adjustments. The backend endpoint `POST /api/society/baseline` returns `daily_demand_lpd` (Step 1) and `daily_demand_with_buffer_lpd` (Step 4). The full composed figure (all 4 steps) lives in the frontend context as `annualDemand`.
+> **Note:** The backend currently applies only Steps 1 and 4 (base + buffer). Steps 2 and 3 are frontend-only adjustments. The backend endpoint `POST /api/societies/baseline` returns `daily_demand_lpd` (Step 1) and `daily_demand_with_buffer_lpd` (Step 4). The full composed figure (all 4 steps) lives in the frontend context as `annualDemand`.
 
 ### Seasonal Demand Weights
 
@@ -189,15 +189,13 @@ estimatedCapex (₹) = usableArea × CAPEX_RATE_PER_SQM
                    = usableArea × 600
 ```
 
-**Constants used in MapStudio (local, distinct from backend yield engine):**
+**Constants used in MapStudio (imported from waterConstants.js):**
 
 | Constant | Value | Note |
 |---|---|---|
 | `OBSTACLE_FACTOR` | `0.80` | Same as backend `USABILITY_FACTOR` |
-| `RUNOFF_COEFF` | `0.90` | Slightly higher than backend `0.85` — concrete slab assumption |
+| `ROOF_RUNOFF_COEFFICIENTS` | `concrete: 0.90, metal: 0.90, gravel: 0.45, tiles: 0.75` | Dynamic runoff coefficient by surface type |
 | `CAPEX_RATE_PER_SQM` | `₹600` | MMR parametric DSR rate |
-
-> **Known discrepancy:** MapStudio uses `RUNOFF_COEFF = 0.90` while the backend yield engine uses `RUNOFF_COEFFICIENT = 0.85`. These are separate models for different use cases (parametric estimate vs. IS-standard calculation) but should be unified in a future refactor.
 
 ### Rainfall API Integration
 
@@ -347,7 +345,7 @@ Content included: society header, financial KPI summary, break-even table (3 sce
 
 ### Endpoints
 
-#### `POST /api/society/baseline`
+#### `POST /api/societies/baseline`
 Calculates IS 1172 daily water demand.
 
 **Request:**
@@ -401,9 +399,9 @@ Fetches real rainfall from Open-Meteo and computes annual + monthly yield.
 
 **Yield formula (in `services/yield_engine.py`):**
 ```python
-yield_litres = rain_mm × roof_area_sqm × RUNOFF_COEFFICIENT × USABILITY_FACTOR
-             = rain_mm × roof_area_sqm × 0.85 × 0.80
-             = rain_mm × roof_area_sqm × 0.68
+yield_litres = rain_mm × roof_area_sqm × ROOF_RUNOFF_COEFFICIENTS[roof_surface_type] × USABILITY_FACTOR
+             = rain_mm × roof_area_sqm × 0.90 × 0.80   [for Concrete default]
+             = rain_mm × roof_area_sqm × 0.72
 ```
 
 **Rainfall API** (`services/rainfall_api.py`):

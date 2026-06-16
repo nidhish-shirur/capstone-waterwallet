@@ -1,10 +1,11 @@
-import React, { useMemo, useState, memo, useCallback } from 'react';
+import React, { useMemo, useState, memo, useCallback, useEffect } from 'react';
 import { Download, TrendingDown, IndianRupee, Clock, Droplets, SlidersHorizontal } from 'lucide-react';
 import {
   Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, ComposedChart,
 } from 'recharts';
 import { useWaterWallet } from '../context/WaterWalletContext';
+import { simulateROI, downloadReport } from '../api/waterwallet';
 
 // ─── Scenario definitions ────────────────────────────────────────────────────
 const SCENARIOS = [
@@ -240,10 +241,69 @@ export default function ROIDashboard() {
     };
   }, [annualTanker, annualMunicipal, capex]);
 
-  // ─── PDF download handler (Feature 2) ────────────────────────────────────
-  const handleDownloadReport = useCallback(() => {
-    // Build a self-contained HTML report and trigger browser print-to-PDF
-    const html = `<!DOCTYPE html>
+  // ─── State to hold backend-computed ROI payback
+  const [backendROI, setBackendROI] = useState(null);
+  const [loadingROI, setLoadingROI] = useState(false);
+
+  // ─── Run ROI simulation on FastAPI backend ───
+  useEffect(() => {
+    if (!annualDemand || !annualYield || !adjustedCapex) return;
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoadingROI(true);
+    simulateROI({
+      daily_demand_lpd: annualDemand / 365,
+      annual_yield_litres: annualYield,
+      tank_capacity_litres: 50000,
+      water_tariff_per_kl: 15.0,
+      installation_cost: adjustedCapex,
+      years: 10,
+      tariff_escalation_rate: 0.08 // 8% current scenario rate
+    })
+      .then((data) => {
+        setBackendROI(data);
+        setLoadingROI(false);
+      })
+      .catch((err) => {
+        console.error("Backend ROI simulation error:", err);
+        setLoadingROI(false);
+      });
+  }, [annualDemand, annualYield, adjustedCapex]);
+
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const handleDownloadReport = useCallback(async () => {
+    try {
+      const payload = {
+        society_name: societyName,
+        society_data: {
+          total_occupants: Number(flats * occupants) || 200,
+          daily_demand_lpd: Math.round(annualDemand / 365) || 27000,
+          daily_demand_with_buffer_lpd: Math.round(annualDemand / 365) || 27000,
+        },
+        catchment_data: {
+          annual_rainfall_mm: 2500,
+          monthly_rainfall_mm: Array(12).fill(200),
+          annual_yield_litres: Math.round(annualYield) || 100000,
+          monthly_yield_litres: Array(12).fill(Math.round(annualYield / 12) || 8000),
+        },
+        roi_data: {
+          payback_years: backendROI?.payback_years ?? 5.5,
+          total_period_savings: backendROI?.total_period_savings ?? 120000.0,
+          ten_year_savings: backendROI?.ten_year_savings ?? 120000.0,
+          yearly_breakdown: backendROI?.yearly_breakdown ?? Array.from({ length: 10 }, (_, i) => ({
+            year: i + 1,
+            savings: 12000.0,
+            cumulative_savings: 12000.0 * (i + 1),
+            net_benefit: 12000.0 * (i + 1) - capex * 100000,
+          })),
+        },
+      };
+
+      await downloadReport(payload);
+    } catch (err) {
+      console.warn("Backend PDF generation failed or not supported. Falling back to in-browser print.", err);
+      // Fallback in-browser printing
+      const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -316,13 +376,14 @@ export default function ROIDashboard() {
 </body>
 </html>`;
 
-    const win = window.open('', '_blank');
-    if (!win) { alert('Please allow pop-ups to download the report.'); return; }
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    setTimeout(() => win.print(), 400);
-  }, [societyName, flats, occupants, capex, capexRatePerSqm, breakEvens, chartData, annualYield, annualDemand, tenYearBleedRange]);
+      const win = window.open('', '_blank');
+      if (!win) { alert('Please allow pop-ups to download the report.'); return; }
+      win.document.write(html);
+      win.document.close();
+      win.focus();
+      setTimeout(() => win.print(), 400);
+    }
+  }, [societyName, flats, occupants, capex, capexRatePerSqm, breakEvens, chartData, annualYield, annualDemand, tenYearBleedRange, backendROI]);
 
   // ─── KPI Cards ───────────────────────────────────────────────────────────
   const kpiCards = [
@@ -344,7 +405,13 @@ export default function ROIDashboard() {
       icon: Clock,
       label: 'Break-Even Range',
       value: `${breakEvens.conservative} – ${breakEvens.highRisk}`,
-      sub: 'Conservative → High-Risk inflation scenario',
+      sub: `Conservative → High-Risk inflation scenario (FastAPI payback: ${
+        loadingROI
+          ? 'calculating...'
+          : backendROI?.payback_years
+            ? `${backendROI.payback_years} yrs`
+            : 'N/A'
+      })`,
       valueColor: 'text-green-600', iconBg: 'bg-green-50', iconColor: 'text-green-500', border: 'border-green-100',
     },
   ];

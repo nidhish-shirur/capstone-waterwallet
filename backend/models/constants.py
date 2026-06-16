@@ -13,13 +13,25 @@ DEMAND_BUFFER_FACTOR: float = 1.10
 # ---------------------------------------------------------------------------
 
 # Fraction of rainfall that becomes usable runoff (typical RCC roof)
-RUNOFF_COEFFICIENT: float = 0.85
+RUNOFF_COEFFICIENT: float = 0.90
+
+# Runoff coefficients by roof surface type
+ROOF_RUNOFF_COEFFICIENTS: dict[str, float] = {
+    "concrete": 0.90,
+    "metal": 0.90,
+    "gravel": 0.45,
+    "tiles": 0.75,
+}
+
 
 # Fraction of roof area considered usable after exclusions (equipment, shading)
 USABILITY_FACTOR: float = 0.80
 
+# Unaccounted-For Water (UFW) distribution loss factor (15%)
+UFW_LOSS_FACTOR: float = 0.15
+
 # Combined yield factor: rainfall × runoff × usability
-YIELD_FACTOR: float = RUNOFF_COEFFICIENT * USABILITY_FACTOR   # ≈ 0.68
+YIELD_FACTOR: float = RUNOFF_COEFFICIENT * USABILITY_FACTOR   # ≈ 0.72
 
 # ---------------------------------------------------------------------------
 # Financial defaults

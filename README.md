@@ -16,13 +16,15 @@ The core problem it solves: most housing societies in MMR know they're overspend
 
 | Feature | Description |
 |---------|-------------|
-| 🏗️ **Virtual Meter** | Configure society parameters (flats, occupants, amenities) to compute baseline daily water demand using IS:1172 (135 LPCD) — with live adjustment multipliers for amenities |
-| 🧾 **Billing Log Table** | Editable month-by-month historical log of municipal bills + private tanker procurement. Auto-highlights months with abnormally high tanker reliance |
-| 🗺️ **Map Studio** | Click-to-trace polygon tool on a satellite map (Leaflet + ESRI World Imagery) to measure rooftop catchment area in real-time using Turf.js geometry |
-| 🌧️ **Live Weather & Monsoon Tracking** | Fetches 10-year daily precipitation data from Open-Meteo archive API (2015–2024) for Thane, MH to compute annual average, monthly distribution, and a Monsoon Dependency Score |
+| 🏗️ **Virtual Meter** | Configure society parameters (flats, occupants, amenities) to compute baseline daily water demand using IS:1172 (135 LPCD) with live demand multipliers for amenities |
+| ⚖️ **UFW Distribution Losses** | Toggleable 15% Unaccounted-For Water (UFW) loss factor per CPHEEO norms applied on top of amenity demand — models pipe leakage, metering error, and unregistered connections |
+| 🔢 **Actual Metered Data Override** | Switch from theoretical IS:1172 calculations to real-world metered bills — enter your society's actual consumption and bill per period (Monthly/Quarterly/Half-Yearly/Yearly) to override the model |
+| 🧾 **Billing Log Table** | Editable month-by-month historical log of municipal bills + private tanker procurement with configurable tanker capacity (L). Auto-highlights months with abnormally high tanker reliance |
+| 🗺️ **Map Studio** | Click-to-trace polygon tool on a satellite map (Leaflet + ESRI World Imagery) with a crosshair cursor to measure rooftop catchment area in real-time using Turf.js geometry |
+| 🌧️ **Live Weather & Monsoon Tracking** | Fetches historical daily precipitation data from Open-Meteo archive API for the traced location's coordinates to compute annual rainfall, monthly distribution, and a Monsoon Dependency Score |
 | 📐 **RWH Capex Estimator** | Calculates parametric CAPEX applying a 0.90 runoff coefficient and 20% obstacle deduction — with a live sensitivity slider (₹400–₹800/m²) |
 | 📈 **Scenario-Based ROI Simulator** | 10-year compounding financial model overlaying three tanker inflation scenarios (Conservative 6%, Current 8%, High-Risk 12%) vs RWH cost. Includes a self-sufficiency rating and dynamic break-even plotting |
-| 📄 **Dynamic PDF Reports** | Auto-generates a printable HTML/PDF report combining financial and hydrological findings via client-side formatting |
+| 📄 **Server-Side PDF Reports** | Generates a professional PDF report via the FastAPI backend using WeasyPrint + Jinja2 HTML templates, combining financial and hydrological findings |
 | 🔁 **Live Context Propagation** | All three views are connected via React Context — changes in Step 1 instantly feed into the ROI model and self-sufficiency indicators in Step 3 |
 
 ---
@@ -30,22 +32,48 @@ The core problem it solves: most housing societies in MMR know they're overspend
 ## 🏛️ Architecture
 
 ```
-src/
-├── App.jsx                    # Root — BrowserRouter, layout shell
-├── main.jsx                   # React 19 entry point
-├── index.css                  # Global styles + custom toggle switch CSS
+waterwallet/
 │
-├── context/
-│   └── WaterWalletContext.jsx # Global state provider (React Context API)
+├── backend/                        # Python FastAPI backend
+│   ├── main.py                     # FastAPI app entry point + CORS config
+│   ├── requirements.txt            # Python dependencies
+│   ├── routers/
+│   │   ├── societies.py            # CRUD routes & POST /api/societies/baseline
+│   │   ├── geospatial.py           # POST /api/catchment/calculate
+│   │   ├── roi.py                  # POST /api/roi/simulate
+│   │   └── report.py              # POST /api/report/generate (PDF)
+│   ├── services/
+│   │   ├── demand_engine.py        # IS:1172 demand computation
+│   │   ├── rainfall_api.py         # Open-Meteo async HTTP client
+│   │   ├── yield_engine.py         # Rooftop yield & CAPEX calc
+│   │   ├── roi_engine.py           # Multi-year ROI simulation
+│   │   └── pdf_generator.py        # WeasyPrint PDF rendering
+│   ├── models/                     # Pydantic request/response schemas
+│   └── templates/                  # Jinja2 HTML templates for PDF
 │
-├── components/
-│   ├── Sidebar.jsx            # Navigation — 3-step wizard sidebar
-│   └── Topbar.jsx             # Top header bar
-│
-└── views/
-    ├── VirtualMeter.jsx       # Step 1 — Society config + billing log
-    ├── MapStudio.jsx          # Step 2 — Interactive satellite map + Capex calc
-    └── ROIDashboard.jsx       # Step 3 — 10-year ROI chart + KPI cards
+└── src/                            # React + Vite frontend
+    ├── App.jsx                     # Root — BrowserRouter, layout shell
+    ├── main.jsx                    # React 19 entry point
+    ├── index.css                   # Global styles + custom toggle switch CSS
+    │
+    ├── api/
+    │   └── waterwallet.js          # Axios client — typed wrappers for all API endpoints
+    │
+    ├── utils/
+    │   ├── waterConstants.js       # IS_LPCD, UFW_LOSS_FACTOR, calculateCanonicalDemand()
+    │   └── formatters.js           # INR currency & number formatters
+    │
+    ├── context/
+    │   └── WaterWalletContext.jsx  # Global state provider (React Context API)
+    │
+    ├── components/
+    │   ├── Sidebar.jsx             # Navigation — 3-step wizard sidebar
+    │   └── Topbar.jsx              # Top header bar
+    │
+    └── views/
+        ├── VirtualMeter.jsx        # Step 1 — Society config, demand calc, billing log
+        ├── MapStudio.jsx           # Step 2 — Interactive satellite map + CAPEX calc
+        └── ROIDashboard.jsx        # Step 3 — 10-year ROI chart + KPI cards
 ```
 
 ### State Management
@@ -64,30 +92,50 @@ No external state library (Redux, Zustand) is used — the problem scope is well
 
 ## 🔬 Technical Methodology
 
-### Water Demand (IS:1172)
+### Water Demand (IS:1172 + CPHEEO UFW Norms)
+
+The demand formula is applied in strict sequence:
+
 ```
-Base Daily Demand = Flats × Avg. Occupants × 135 LPCD
-Adjusted Demand   = Base × (1 + ΣAmenity Multipliers)
+1. baseDemand      = Flats × Avg. Occupants × IS_LPCD (135 L/person/day)
+2. afterAmenities  = baseDemand × (1 + ΣAmenity Multipliers)
+3. afterUFW        = afterAmenities × 1.15   [if UFW toggle is ON — CPHEEO standard]
+4. adjustedDemand  = afterUFW × 1.10         [10% peak-demand buffer, IS 1172 §4]
 ```
+
 Amenity multipliers: Garden (+12%), Car Wash (+8%), Pool (+20%)
 
-### Rainfall Harvesting Yield (Karnal Research Paper)
+The UFW step is optional and toggled per-society. All constants are defined in a single source of truth (`src/utils/waterConstants.js`) mirrored by `backend/models/constants.py`.
+
+**Metered Data Override:** Users may bypass the IS:1172 model entirely by enabling the "Use Actual Metered Data" toggle, entering their real consumption, bill, and tanker spend on their society's billing cycle (Monthly/Quarterly/Half-Yearly/Yearly). The system annualises the figures automatically.
+
+### Rainfall Harvesting Yield
+
 ```
-Usable Catchment Area = Traced Gross Area × 0.80  (obstacle deduction)
+Usable Catchment Area = Traced Gross Area × 0.80  (20% obstacle deduction)
 Annual Yield (L)      = Usable Area (m²) × Annual Rainfall (mm) × 0.90 (runoff coefficient)
-Parametric Capex (₹)  = Usable Area (m²) × ₹600/m²
+Parametric Capex (₹)  = Usable Area (m²) × ₹600/m²  (MMR DSR mid-point)
 ```
 
-### 10-Year ROI Engine
+Annual rainfall is fetched live from the Open-Meteo Archive API for the **exact coordinates of the traced polygon centroid**, not a hardcoded location.
+
+### 10-Year ROI Engine (Backend)
+
+The backend ROI engine (`services/roi_engine.py`) caps the usable annual yield against tank capacity (monsoon constraint) and demand, then runs a year-by-year simulation:
+
 ```
-Annual "Do Nothing" Cost (Year i) = Tanker × 1.08^(i-1) + Municipal × 1.05^(i-1)
-Annual "With RWH" Cost  (Year i) = Municipal × 1.05^(i-1) + Capex × 0.03  (AMC)
+effective_yield_kl = min(annual_yield, tank_capacity × 4, annual_demand) / 1000
+annual_savings(year i) = effective_yield_kl × tariff × (1 + escalation_rate)^(i-1)
+payback_year = interpolated year when cumulative_savings ≥ installation_cost
 ```
-Break-even is detected when `cumulative(With RWH) < cumulative(Do Nothing)`.
+
+The frontend additionally overlays three "Cost of Doing Nothing" tanker inflation trajectories (6%, 8%, 12%) for scenario comparison.
 
 ---
 
 ## 🛠️ Tech Stack
+
+### Frontend
 
 | Layer | Technology |
 |-------|-----------|
@@ -97,32 +145,67 @@ Break-even is detected when `cumulative(With RWH) < cumulative(Do Nothing)`.
 | Maps | React-Leaflet v5 + ESRI World Imagery tiles |
 | Geospatial | Turf.js v7 (polygon area calculation) |
 | Charts | Recharts v3 (ComposedChart, Area, Line, ReferenceLine) |
-| Weather API | Open-Meteo Archive API (free, no key required) |
+| HTTP Client | Axios |
 | Icons | Lucide React |
+
+### Backend
+
+| Layer | Technology |
+|-------|-----------|
+| Framework | FastAPI ≥ 0.115 |
+| Server | Uvicorn (ASGI) |
+| Validation | Pydantic v2 |
+| HTTP Client | httpx (async, for Open-Meteo) |
+| PDF Generation | WeasyPrint ≥ 61.2 |
+| Templating | Jinja2 ≥ 3.1 |
+| Weather API | Open-Meteo Archive API (free, no key required) |
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- Node.js ≥ 18
-- npm ≥ 9
 
-### Installation
+- Node.js ≥ 18 / npm ≥ 9
+- Python ≥ 3.11
+
+### Frontend
 
 ```bash
 # Clone the repository
 git clone <repo-url>
 cd capstone
 
-# Install dependencies
+# Install JS dependencies
 npm install
 
-# Start the development server
+# Start the Vite development server
 npm run dev
 ```
 
-The app will be available at `http://localhost:5173`.
+The frontend will be available at `http://localhost:5173`.
+
+### Backend
+
+```bash
+cd backend
+
+# Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS / Linux
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Start the FastAPI server
+uvicorn main:app --reload --port 8000
+```
+
+The API will be available at `http://localhost:8000`.  
+Interactive API docs: `http://localhost:8000/docs`
+
+> The frontend reads `VITE_API_URL` from `.env` (defaults to `http://localhost:8000` if not set).
 
 ### Build for Production
 
@@ -136,13 +219,20 @@ npm run preview
 ## 📸 Application Walkthrough
 
 ### Step 1 — Virtual Meter
-Enter your society's name, number of flats, and average occupants. The tool instantly computes your IS-standard baseline daily water demand. Check off water-heavy amenities (garden, pool, car wash) to apply demand multipliers. Then log month-by-month historical bills — municipal and private tankers — to establish your actual water spend.
+
+Enter your society's name, number of flats, and average occupants. The tool instantly computes your IS:1172 baseline daily water demand (Flats × Occupants × 135 LPCD). Check off water-heavy amenities (garden, pool, car wash) to apply demand multipliers. Toggle the **UFW Distribution Losses** switch to add the standard 15% unaccounted-for-water factor for real-world accuracy.
+
+If your society has actual metered bills, enable **"Use Actual Metered Data"** to enter real consumption and spend figures on your billing cycle — overriding the theoretical model entirely.
+
+Below the demand calculator, log month-by-month historical bills in the **Billing Log** — enter municipal bill, number of private tankers purchased, per-tanker cost, and tanker capacity in litres. The table auto-highlights months with ≥10 tankers as high-stress months and computes summary totals.
 
 ### Step 2 — Map Studio
-The app opens a high-resolution satellite view centered on Thane, MH. Click directly on your building's rooftop to place polygon vertices. Once 3+ points are plotted, Turf.js calculates the catchment area in real-time. The sidebar simultaneously shows live annual rainfall (fetched from Open-Meteo) alongside a monthly rainfall distribution chart, and calculates your Monsoon Dependency Score. It derives the harvestable yield and parametric CAPEX — all updating with every click.
+
+The app opens a high-resolution satellite view. Click directly on your building's rooftop to place polygon vertices (a crosshair cursor aids precision). Once 3+ points are plotted, Turf.js calculates the catchment area in real-time. The sidebar shows live annual rainfall (fetched from Open-Meteo for the polygon's exact coordinates) alongside a monthly rainfall distribution chart and a Monsoon Dependency Score. It derives the harvestable yield and parametric CAPEX — all updating with every click.
 
 ### Step 3 — ROI Dashboard
-The dashboard reads all data from the previous two steps to calculate your rooftop self-sufficiency and run a 10-year compounding simulation. Three KPI cards show the cumulative "water bleed," the RWH project budget, and the projected break-even year range. You can adjust the CAPEX sensitivity slider to see real-time impact on the project budget. The Recharts graph plots three "Cost of Doing Nothing" trajectories (6%, 8%, 12% inflation) against the RWH curve. Finally, users can download a dynamic PDF report of all findings.
+
+The dashboard reads all data from the previous two steps to calculate your rooftop self-sufficiency and run a 10-year compounding simulation via the FastAPI backend. Three KPI cards show the cumulative "water bleed," the RWH project budget, and the projected break-even year range. You can adjust the CAPEX sensitivity slider to see real-time impact on the project budget. The Recharts graph plots three "Cost of Doing Nothing" trajectories (6%, 8%, 12% inflation) against the RWH curve. Finally, click **Download PDF Report** to generate a professional server-side report via WeasyPrint.
 
 ---
 
@@ -150,9 +240,10 @@ The dashboard reads all data from the previous two steps to calculate your rooft
 
 | Source | Usage | Notes |
 |--------|-------|-------|
-| **Open-Meteo Archive API** | 10-year daily precipitation data for Thane (19.2183°N, 72.9781°E) | Free, no API key required. Falls back to 2500 mm on error |
+| **Open-Meteo Archive API** | Historical daily precipitation data for any lat/long | Free, no API key required. Fetches the last complete calendar year |
 | **ESRI World Imagery** | Satellite map tiles | Free for non-commercial use |
 | **IS:1172** | Per-capita water demand standard (135 LPCD) | Indian Standards document |
+| **CPHEEO Manual** | UFW loss factor (15%) | Central Public Health and Environmental Engineering Organisation norms |
 | **MMR DSR** | Parametric RWH Capex rate (₹600/m²) | Mumbai Metropolitan Region District Schedule of Rates |
 
 ---

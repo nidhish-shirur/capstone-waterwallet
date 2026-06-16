@@ -20,6 +20,14 @@ export const UFW_LOSS_FACTOR = 0.15;
  */
 export const DEMAND_BUFFER_FACTOR = 1.10;
 
+/** Runoff coefficients by roof surface type */
+export const ROOF_RUNOFF_COEFFICIENTS = {
+  concrete: 0.90,
+  metal: 0.90,
+  gravel: 0.45,
+  tiles: 0.75,
+};
+
 // ---------------------------------------------------------------------------
 // Seasonal demand distribution weights (Jan → Dec, index 0–11)
 // Source: CPHEEO urban water demand norms for peninsular India

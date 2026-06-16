@@ -16,7 +16,11 @@ async def catchment_calculate(payload: CatchmentRequest) -> CatchmentResponse:
     annual_rainfall = sum(monthly_rainfall)
 
     monthly_yield = [
-        calculate_yield(rain_mm=r, roof_area_sqm=payload.roof_area_sqm)
+        calculate_yield(
+            rain_mm=r,
+            roof_area_sqm=payload.roof_area_sqm,
+            roof_surface_type=payload.roof_surface_type,
+        )
         for r in monthly_rainfall
     ]
     annual_yield = sum(monthly_yield)
