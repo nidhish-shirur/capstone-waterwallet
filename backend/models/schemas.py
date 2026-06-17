@@ -9,13 +9,11 @@ class SocietyBaselineRequest(BaseModel):
     num_flats: int = Field(..., gt=0, description="Total number of flats in the society")
     occupants_per_flat: float = Field(default=3.5, gt=0)
     lpcd_override: Optional[float] = Field(default=None, gt=0, le=1000, description="Override IS 1172 LPCD value")
-    amenity_multiplier: float = Field(default=0.0, ge=0.0)
     include_losses: bool = Field(default=True)
 
 class SocietyBaselineResponse(BaseModel):
     total_occupants: int
     base_demand_lpd: float
-    after_amenities_lpd: float
     daily_demand_lpd: float
     daily_demand_with_buffer_lpd: float
 

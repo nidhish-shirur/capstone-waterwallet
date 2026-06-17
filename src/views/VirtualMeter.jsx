@@ -14,11 +14,7 @@ import { formatRupees as fmtINR } from '../utils/formatters';
 // IS_LPCD (135 L/person/day) is imported from waterConstants — single source
 // of truth shared with the backend constant IS_LPCD in models/constants.py.
 
-const AMENITY_OPTIONS = [
-  { id: 'garden', label: 'Garden / Landscaping', multiplier: 0.12, emoji: '🌿' },
-  { id: 'carwash', label: 'Daily Car Washing', multiplier: 0.08, emoji: '🚗' },
-  { id: 'pool', label: 'Swimming Pool', multiplier: 0.20, emoji: '🏊' },
-];
+// Amenities options removed
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -47,30 +43,7 @@ function ToggleSwitch({ checked, onChange }) {
   );
 }
 
-// ─── Amenity Checkbox ───────────────────────────────────────────────────────
-function AmenityCheckbox({ option, checked, onChange }) {
-  return (
-    <label
-      className={`flex items-center gap-3 px-4 py-3 rounded-xl border-2 cursor-pointer transition-all
-        ${checked ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:border-slate-300'}`}
-    >
-      <input type="checkbox" checked={checked} onChange={onChange} className="sr-only" />
-      <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all
-        ${checked ? 'border-blue-600 bg-blue-600' : 'border-slate-300 bg-white'}`}>
-        {checked && (
-          <svg viewBox="0 0 10 8" className="w-3 h-3 fill-white">
-            <path d="M1 4l3 3 5-6" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-      </div>
-      <span className="text-lg">{option.emoji}</span>
-      <div className="flex-1">
-        <p className={`text-sm font-medium ${checked ? 'text-blue-800' : 'text-slate-700'}`}>{option.label}</p>
-        <p className="text-xs text-slate-400">+{Math.round(option.multiplier * 100)}% demand</p>
-      </div>
-    </label>
-  );
-}
+// AmenityCheckbox component removed
 
 
 
@@ -104,13 +77,11 @@ export default function VirtualMeter() {
   const [occupants, setOccupants] = useState(ctxOccupants || 4);
   const [pincode, setPincode] = useState(ctxPincode || '400071');
   const [roofSurfaceType, setRoofSurfaceType] = useState(ctxRoofSurfaceType || 'concrete');
-  const [amenities, setAmenities] = useState({ garden: false, carwash: false, pool: false });
   const [includeLosses, setIncludeLosses] = useState(true); // 15% UFW (Unaccounted for Water)
   const [useMeteredData, setUseMeteredData] = useState(false);
   const [meteredFrequency, setMeteredFrequency] = useState('Quarterly');
   const [meteredConsumption, setMeteredConsumption] = useState('');
   const [meteredBill, setMeteredBill] = useState('');
-  const [meteredTanker, setMeteredTanker] = useState('');
 
   // ── Database states
   const [isSaving, setIsSaving] = useState(false);
@@ -127,30 +98,20 @@ export default function VirtualMeter() {
   //   3. afterUFW      = afterAmenities × 1.15  [if includeLosses]
   //   4. adjustedDemand = afterUFW × 1.10        [peak-demand buffer, always applied]
   const { baseDemand, adjustedDemand } = useMemo(() => {
-    const amenityMultiplier = AMENITY_OPTIONS.reduce(
-      (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
-      0,
-    );
     return calculateCanonicalDemand({
       numFlats: Number(flats),
       occupantsPerFlat: Number(occupants),
       lpcd: IS_LPCD,
-      amenityMultiplier,
       includeLosses,
     });
-  }, [flats, occupants, amenities, includeLosses]);
+  }, [flats, occupants, includeLosses]);
 
   // Derived: effective percentage multiplier applied before the peak buffer.
-  // The canonical formula compounds the percentages: (1 + amenityMult) * (1 + UFW_LOSS_FACTOR)
+  // The canonical formula compounds the percentages: (1 + UFW_LOSS_FACTOR)
   const effectivePercentage = useMemo(() => {
-    const amenityPart = AMENITY_OPTIONS.reduce(
-      (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
-      0,
-    );
     const ufwMultiplier = includeLosses ? (1 + UFW_LOSS_FACTOR) : 1;
-    const combinedMultiplier = (1 + amenityPart) * ufwMultiplier;
-    return (combinedMultiplier - 1) * 100;
-  }, [amenities, includeLosses]);
+    return (ufwMultiplier - 1) * 100;
+  }, [includeLosses]);
 
   // ── Billing totals
   const { totalTankerSpend, totalMunicipal, avgMonthly, totalTankerVolume } = useMemo(() => {
@@ -168,16 +129,10 @@ export default function VirtualMeter() {
   useEffect(() => {
     if (!flats || !occupants) return;
 
-    const amenityMultiplier = AMENITY_OPTIONS.reduce(
-      (acc, opt) => acc + (amenities[opt.id] ? opt.multiplier : 0),
-      0,
-    );
-
     const handler = setTimeout(() => {
       fetchSocietyBaseline({
         num_flats: Number(flats),
         occupants_per_flat: Number(occupants),
-        amenity_multiplier: amenityMultiplier,
         include_losses: includeLosses,
       })
         .then((data) => {
@@ -189,7 +144,7 @@ export default function VirtualMeter() {
     }, 250);
 
     return () => clearTimeout(handler);
-  }, [flats, occupants, amenities, includeLosses]);
+  }, [flats, occupants, includeLosses]);
 
   // ── Sync computed totals to global context whenever they change ──
   useEffect(() => {
@@ -202,7 +157,9 @@ export default function VirtualMeter() {
     if (useMeteredData) {
       const multipliers = { 'Monthly': 12, 'Quarterly': 4, 'Half-Yearly': 2, 'Yearly': 1 };
       const m = multipliers[meteredFrequency] || 4;
-      setTotalTankerSpend(Number(meteredTanker || 0) * m);
+      const tankerMonths = billingRows.length || 1;
+      const annualisedTanker = (totalTankerSpend / tankerMonths) * 12;
+      setTotalTankerSpend(annualisedTanker);
       setTotalMunicipal(Number(meteredBill || 0) * m);
       setBillingMonths(12);
       setAnnualDemand(Number(meteredConsumption || 0) * m);
@@ -215,7 +172,7 @@ export default function VirtualMeter() {
   }, [
     societyName, flats, occupants, pincode, roofSurfaceType, totalTankerSpend, totalMunicipal,
     billingRows.length, backendDemand, useMeteredData,
-    meteredFrequency, meteredConsumption, meteredBill, meteredTanker,
+    meteredFrequency, meteredConsumption, meteredBill,
     setAnnualDemand, setBillingMonths, setCtxFlats, setCtxOccupants, setCtxPincode, setCtxRoofSurfaceType, setCtxSocietyName, setTotalMunicipal, setTotalTankerSpend
   ]);
 
@@ -412,40 +369,21 @@ export default function VirtualMeter() {
             </div>
           </div>
 
-          {/* Amenities */}
-          <div className="lg:col-span-3 space-y-2">
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider">Water-Heavy Amenities</label>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {AMENITY_OPTIONS.map((opt) => (
-                <AmenityCheckbox
-                  key={opt.id}
-                  option={opt}
-                  checked={amenities[opt.id]}
-                  onChange={() => setAmenities((prev) => ({ ...prev, [opt.id]: !prev[opt.id] }))}
-                />
-              ))}
+          {/* Adjusted Daily Demand — always shown as it incorporates peak buffers */}
+          <div className="lg:col-span-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <TrendingUp size={16} className="text-amber-600" />
+                <div>
+                  <p className="text-sm font-semibold text-amber-800">Adjusted Daily Demand</p>
+                  <p className="text-xs text-amber-600">
+                    Includes 10% peak buffer headroom{includeLosses ? ' and 15% UFW distribution losses' : ''}
+                  </p>
+                </div>
+              </div>
+              <p className="text-xl font-extrabold text-amber-700">{adjustedDemand.toLocaleString('en-IN')} L/day</p>
             </div>
           </div>
-
-          {/* Adjusted Demand — shown whenever any multiplier is active */}
-          {effectivePercentage > 0 && (
-            <div className="lg:col-span-3">
-              <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-3.5 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TrendingUp size={16} className="text-amber-600" />
-                  <div>
-                    <p className="text-sm font-semibold text-amber-800">Adjusted Daily Demand</p>
-                    <p className="text-xs text-amber-600">
-                      +{Math.round(effectivePercentage)}% compounded
-                      (Amenities{includeLosses ? ' & 15% UFW losses' : ''})
-                      · then ×1.10 peak buffer
-                    </p>
-                  </div>
-                </div>
-                <p className="text-xl font-extrabold text-amber-700">{adjustedDemand.toLocaleString('en-IN')} L/day</p>
-              </div>
-            </div>
-          )}
 
           {/* Real-World Losses (UFW) Toggle */}
           <div className="lg:col-span-3">
@@ -486,7 +424,7 @@ export default function VirtualMeter() {
               </div>
               
               {useMeteredData && (
-                <div className="px-5 py-5 border-t border-slate-200 bg-blue-50/50 grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="px-5 py-5 border-t border-slate-200 bg-blue-50/50 grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Bill Frequency</label>
                     <select value={meteredFrequency} onChange={(e) => setMeteredFrequency(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -504,10 +442,6 @@ export default function VirtualMeter() {
                     <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Municipal Bill (₹)</label>
                     <input type="number" min="0" value={meteredBill} onChange={(e) => setMeteredBill(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 45000" />
                   </div>
-                  <div className="space-y-1.5">
-                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Tanker Spend (₹)</label>
-                    <input type="number" min="0" value={meteredTanker} onChange={(e) => setMeteredTanker(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 20000" />
-                  </div>
                 </div>
               )}
             </div>
@@ -516,7 +450,7 @@ export default function VirtualMeter() {
       </div>
 
       {/* ── Card 2: Historical Billing Logs ── */}
-      <div className={`bg-white rounded-2xl shadow-md p-6 transition-all duration-300 ${useMeteredData ? 'opacity-40 pointer-events-none grayscale-[50%]' : ''}`}>
+      <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">

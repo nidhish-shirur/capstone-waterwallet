@@ -35,23 +35,17 @@ These constants are the single source of truth for every demand calculation acro
 
 ### Canonical Daily Demand Formula
 
-Applied in strict sequence. **All four layers must be composed in this order.**
+Applied in strict sequence. **All three layers must be composed in this order.**
 
 ```
 Step 1 — Base demand
   base = num_flats × occupants_per_flat × IS_LPCD
 
-Step 2 — Amenity load
-  afterAmenities = base × (1 + Σ amenity_multipliers)
-    Garden/Landscaping : +12%
-    Daily Car Washing  : +8%
-    Swimming Pool      : +20%
+Step 2 — UFW distribution loss  [toggleable]
+  afterUFW = base × (1 + UFW_LOSS_FACTOR)
+           = base × 1.15
 
-Step 3 — UFW distribution loss  [toggleable]
-  afterUFW = afterAmenities × (1 + UFW_LOSS_FACTOR)
-           = afterAmenities × 1.15
-
-Step 4 — Peak-demand buffer     [always applied]
+Step 3 — Peak-demand buffer     [always applied]
   adjustedDemand = afterUFW × DEMAND_BUFFER_FACTOR
                  = afterUFW × 1.10
 ```
@@ -59,7 +53,7 @@ Step 4 — Peak-demand buffer     [always applied]
 **JavaScript implementation:** `calculateCanonicalDemand()` in `waterConstants.js`  
 **Python implementation:** `calculate_demand()` in `backend/services/demand_engine.py`
 
-> **Note:** The backend currently applies only Steps 1 and 4 (base + buffer). Steps 2 and 3 are frontend-only adjustments. The backend endpoint `POST /api/societies/baseline` returns `daily_demand_lpd` (Step 1) and `daily_demand_with_buffer_lpd` (Step 4). The full composed figure (all 4 steps) lives in the frontend context as `annualDemand`.
+> **Note:** The frontend and backend demand calculations are fully synchronized. The backend endpoint `POST /api/societies/baseline` returns `daily_demand_lpd` and `daily_demand_with_buffer_lpd` calculated with UFW losses and peak buffer matching the canonical formula. The annualised figure lives in the frontend context as `annualDemand`.
 
 ### Seasonal Demand Weights
 
@@ -88,7 +82,6 @@ Sum of weights = 11.4. Normalization ensures monthly values always integrate bac
 |---|---|
 | Society profiling | Name, number of flats, average occupants per flat |
 | Live demand calculator | Recalculates instantly on every input change via `useMemo` |
-| Amenity toggles | Three checkboxes add percentage multipliers to base demand |
 | UFW toggle | ON/OFF switch adds 15% distribution loss to demand |
 | Peak-buffer | Always-on 10% headroom, applied last |
 | Historical billing log | Editable table: month, year, municipal bill, tanker count, cost/tanker, tanker capacity |
@@ -99,18 +92,14 @@ Sum of weights = 11.4. Normalization ensures monthly values always integrate bac
 
 ```javascript
 // Delegates to calculateCanonicalDemand() from waterConstants.js
-const amenityMultiplier = sum of active option.multiplier values;
-
-{ baseDemand, afterAmenities, adjustedDemand } = calculateCanonicalDemand({
-  numFlats, occupantsPerFlat, lpcd: IS_LPCD,
-  amenityMultiplier, includeLosses,
+const { baseDemand, adjustedDemand } = calculateCanonicalDemand({
+  numFlats, occupantsPerFlat, lpcd: IS_LPCD, includeLosses,
 });
 ```
 
-**Manual test case** (50 flats, 4 occ, UFW on, no amenities):
+**Manual test case** (50 flats, 4 occ, UFW on):
 ```
 base          = 50 × 4 × 135           = 27,000 L/day
-afterAmenities = 27,000 × 1.00         = 27,000 L/day
 afterUFW      = 27,000 × 1.15          = 31,050 L/day
 adjustedDemand = 31,050 × 1.10         = 34,155 L/day  ✓
 annualDemand  = 34,155 × 365           = 12,466,575 L/year

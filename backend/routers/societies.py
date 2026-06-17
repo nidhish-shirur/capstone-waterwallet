@@ -27,7 +27,6 @@ def society_baseline(payload: schemas.SocietyBaselineRequest) -> schemas.Society
         num_flats=payload.num_flats,
         occupants_per_flat=payload.occupants_per_flat,
         lpcd=lpcd,
-        amenity_multiplier=payload.amenity_multiplier,
         include_losses=payload.include_losses,
     )
     return schemas.SocietyBaselineResponse(**result)

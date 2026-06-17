@@ -16,8 +16,8 @@ The core problem it solves: most housing societies in MMR know they're overspend
 
 | Feature | Description |
 |---------|-------------|
-| 🏗️ **Virtual Meter** | Configure society parameters (flats, occupants, amenities) to compute baseline daily water demand using IS:1172 (135 LPCD) with live demand multipliers for amenities |
-| ⚖️ **UFW Distribution Losses** | Toggleable 15% Unaccounted-For Water (UFW) loss factor per CPHEEO norms applied on top of amenity demand — models pipe leakage, metering error, and unregistered connections |
+| 🏗️ **Virtual Meter** | Configure society parameters (flats, occupants) to compute baseline daily water demand using IS:1172 (135 LPCD) |
+| ⚖️ **UFW Distribution Losses** | Toggleable 15% Unaccounted-For Water (UFW) loss factor per CPHEEO norms — models pipe leakage, metering error, and unregistered connections |
 | 🔢 **Actual Metered Data Override** | Switch from theoretical IS:1172 calculations to real-world metered bills — enter your society's actual consumption and bill per period (Monthly/Quarterly/Half-Yearly/Yearly) to override the model |
 | 🧾 **Billing Log Table** | Editable month-by-month historical log of municipal bills + private tanker procurement with configurable tanker capacity (L). Auto-highlights months with abnormally high tanker reliance |
 | 🗺️ **Map Studio** | Click-to-trace polygon tool on a satellite map (Leaflet + ESRI World Imagery) with a crosshair cursor to measure rooftop catchment area in real-time using Turf.js geometry |
@@ -98,12 +98,9 @@ The demand formula is applied in strict sequence:
 
 ```
 1. baseDemand      = Flats × Avg. Occupants × IS_LPCD (135 L/person/day)
-2. afterAmenities  = baseDemand × (1 + ΣAmenity Multipliers)
-3. afterUFW        = afterAmenities × 1.15   [if UFW toggle is ON — CPHEEO standard]
-4. adjustedDemand  = afterUFW × 1.10         [10% peak-demand buffer, IS 1172 §4]
+2. afterUFW        = baseDemand × 1.15   [if UFW toggle is ON — CPHEEO standard]
+3. adjustedDemand  = afterUFW × 1.10     [10% peak-demand buffer, IS 1172 §4]
 ```
-
-Amenity multipliers: Garden (+12%), Car Wash (+8%), Pool (+20%)
 
 The UFW step is optional and toggled per-society. All constants are defined in a single source of truth (`src/utils/waterConstants.js`) mirrored by `backend/models/constants.py`.
 
@@ -220,7 +217,7 @@ npm run preview
 
 ### Step 1 — Virtual Meter
 
-Enter your society's name, number of flats, and average occupants. The tool instantly computes your IS:1172 baseline daily water demand (Flats × Occupants × 135 LPCD). Check off water-heavy amenities (garden, pool, car wash) to apply demand multipliers. Toggle the **UFW Distribution Losses** switch to add the standard 15% unaccounted-for-water factor for real-world accuracy.
+Enter your society's name, number of flats, and average occupants. The tool instantly computes your IS:1172 baseline daily water demand (Flats × Occupants × 135 LPCD). Toggle the **UFW Distribution Losses** switch to add the standard 15% unaccounted-for-water factor for real-world accuracy.
 
 If your society has actual metered bills, enable **"Use Actual Metered Data"** to enter real consumption and spend figures on your billing cycle — overriding the theoretical model entirely.
 

@@ -43,13 +43,12 @@ export function WaterWalletProvider({ children }) {
   const [annualYield,     setAnnualYield]     = useState(0);
   // Annual water demand in litres — synced from VirtualMeter for Phase 3 badge.
   // Seed = same defaults as the VirtualMeter initial state (50 flats, 4 occ,
-  // UFW on, no amenities) computed through the canonical demand function so
+  // UFW on) computed through the canonical demand function so
   // the seed and the live value are always produced by the same formula.
   const defaultDemandSeed = calculateCanonicalDemand({
     numFlats: 50,
     occupantsPerFlat: 4,
     includeLosses: true,
-    amenityMultiplier: 0,
   }).adjustedDemand * 365;
   const [annualDemand,    setAnnualDemand]    = useState(defaultDemandSeed);
   // Monthly rainfall mm array (Jan–Dec, 12 values) for bar chart + monsoon score
