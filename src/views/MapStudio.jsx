@@ -4,7 +4,7 @@ import {
   Cloud, Maximize2, Droplets, Landmark, ChevronRight, Trash2,
   MousePointerClick, CheckCircle2, AlertTriangle, Undo
 } from 'lucide-react';
-import { MapContainer, TileLayer, Polygon, Marker, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Marker, useMapEvents, useMap } from 'react-leaflet';
 import * as turf from '@turf/turf';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -16,6 +16,7 @@ import { useWaterWallet } from '../context/WaterWalletContext';
 import { fetchCatchmentData } from '../api/waterwallet';
 import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
 import { formatLitres, formatRupees, formatRainfall, formatArea } from '../utils/formatters';
+import { prefetchThaneMapTiles } from '../utils/mapPrefetch';
 
 // ─── Fix Leaflet's broken default marker icons in Vite ───────────────────────
 delete L.Icon.Default.prototype._getIconUrl;
@@ -50,6 +51,22 @@ const MONSOON_IDX = [5, 6, 7, 8];
 // ─── Sub-components ──────────────────────────────────────────────────────────
 function MapClickHandler({ onMapClick }) {
   useMapEvents({ click(e) { onMapClick([e.latlng.lat, e.latlng.lng]); } });
+  return null;
+}
+
+function MapResizeHandler() {
+  const map = useMap();
+  useEffect(() => {
+    // Invalidate size immediately
+    map.invalidateSize();
+    
+    // Also trigger it after a delay to ensure parent container rendering completes
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+    }, 250);
+    
+    return () => clearTimeout(timer);
+  }, [map]);
   return null;
 }
 
@@ -181,6 +198,11 @@ export default function MapStudio() {
         setWeatherError(true);
         setWeatherLoading(false);
       });
+  }, []);
+
+  // Prefetch Thane map tiles on mount to cache them offline
+  useEffect(() => {
+    prefetchThaneMapTiles();
   }, []);
 
   const effectiveRainfall = annualRainfall || 2500;
@@ -353,7 +375,14 @@ export default function MapStudio() {
                   scrollWheelZoom
                   className="crosshair-map"
                 >
-                  <TileLayer url={ESRI_TILE_URL} attribution={ESRI_ATTRIBUTION} maxZoom={20} />
+                  <MapResizeHandler />
+                  <TileLayer 
+                    url={ESRI_TILE_URL} 
+                    attribution={ESRI_ATTRIBUTION} 
+                    maxZoom={20} 
+                    maxNativeZoom={19}
+                    crossOrigin="anonymous" 
+                  />
                   <MapClickHandler onMapClick={addPoint} />
                   {points.map(([lat, lng], i) => (
                     <Marker key={i} position={[lat, lng]} />

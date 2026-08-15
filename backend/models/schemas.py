@@ -48,6 +48,9 @@ class ROIRequest(BaseModel):
     tariff_escalation_rate: float = Field(default=0.0, ge=0.0, description="Annual municipal tariff escalation rate (e.g. 0.05 for 5%)")
     installation_cost: float = Field(default=250000, ge=0, description="One-time capex in ₹")
     years: int = Field(default=10, ge=1, le=30)
+    annual_tanker_spend: float = Field(default=200000.0, ge=0.0, description="Annual spend on tanker water in ₹")
+    annual_tanker_volume_litres: float = Field(default=1333333.3, ge=0.0, description="Annual tanker volume in litres")
+    annual_municipal_spend: float = Field(default=46000.0, ge=0.0, description="Annual municipal water bill in ₹")
 
     @field_validator("water_tariff_per_kl")
     @classmethod

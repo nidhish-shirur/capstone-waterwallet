@@ -21,9 +21,11 @@ The core problem it solves: most housing societies in MMR know they're overspend
 | 🔢 **Actual Metered Data Override** | Switch from theoretical IS:1172 calculations to real-world metered bills — enter your society's actual consumption and bill per period (Monthly/Quarterly/Half-Yearly/Yearly) to override the model |
 | 🧾 **Billing Log Table** | Editable month-by-month historical log of municipal bills + private tanker procurement with configurable tanker capacity (L). Auto-highlights months with abnormally high tanker reliance |
 | 🗺️ **Map Studio** | Click-to-trace polygon tool on a satellite map (Leaflet + ESRI World Imagery) with a crosshair cursor to measure rooftop catchment area in real-time using Turf.js geometry |
+| ⚡ **Offline Map Tile Caching** | Service worker caching (`public/sw.js`) and tile prefetching utility (`mapPrefetch.js`) for Esri World Imagery map tiles to support offline tile access and instant map loading |
 | 🌧️ **Live Weather & Monsoon Tracking** | Fetches historical daily precipitation data from Open-Meteo archive API for the traced location's coordinates to compute annual rainfall, monthly distribution, and a Monsoon Dependency Score |
 | 📐 **RWH Capex Estimator** | Calculates parametric CAPEX applying a 0.90 runoff coefficient and 20% obstacle deduction — with a live sensitivity slider (₹400–₹800/m²) |
 | 📈 **Scenario-Based ROI Simulator** | 10-year compounding financial model overlaying three tanker inflation scenarios (Conservative 6%, Current 8%, High-Risk 12%) vs RWH cost. Includes a self-sufficiency rating and dynamic break-even plotting |
+| 🗄️ **Database Persistence** | SQLAlchemy ORM & Alembic migrations backend layer to persist housing society baselines, metered logs, and ROI simulation models |
 | 📄 **Server-Side PDF Reports** | Generates a professional PDF report via the FastAPI backend using WeasyPrint + Jinja2 HTML templates, combining financial and hydrological findings |
 | 🔁 **Live Context Propagation** | All three views are connected via React Context — changes in Step 1 instantly feed into the ROI model and self-sufficiency indicators in Step 3 |
 
@@ -36,7 +38,11 @@ waterwallet/
 │
 ├── backend/                        # Python FastAPI backend
 │   ├── main.py                     # FastAPI app entry point + CORS config
+│   ├── config.py                   # Pydantic environment configuration
+│   ├── database.py                 # SQLAlchemy database session & engine
 │   ├── requirements.txt            # Python dependencies
+│   ├── alembic.ini                 # Alembic migration configuration
+│   ├── alembic/                    # Database schema migration scripts
 │   ├── routers/
 │   │   ├── societies.py            # CRUD routes & POST /api/societies/baseline
 │   │   ├── geospatial.py           # POST /api/catchment/calculate
@@ -48,12 +54,18 @@ waterwallet/
 │   │   ├── yield_engine.py         # Rooftop yield & CAPEX calc
 │   │   ├── roi_engine.py           # Multi-year ROI simulation
 │   │   └── pdf_generator.py        # WeasyPrint PDF rendering
-│   ├── models/                     # Pydantic request/response schemas
+│   ├── models/
+│   │   ├── constants.py            # Engineering constants & LPCD standards
+│   │   ├── db_models.py            # SQLAlchemy database models
+│   │   └── schemas.py              # Pydantic validation schemas
 │   └── templates/                  # Jinja2 HTML templates for PDF
+│
+├── public/
+│   └── sw.js                       # Service Worker for Esri map tile caching
 │
 └── src/                            # React + Vite frontend
     ├── App.jsx                     # Root — BrowserRouter, layout shell
-    ├── main.jsx                    # React 19 entry point
+    ├── main.jsx                    # React 19 entry point + SW registration
     ├── index.css                   # Global styles + custom toggle switch CSS
     │
     ├── api/
@@ -61,6 +73,7 @@ waterwallet/
     │
     ├── utils/
     │   ├── waterConstants.js       # IS_LPCD, UFW_LOSS_FACTOR, calculateCanonicalDemand()
+    │   ├── mapPrefetch.js          # Slippy map tile prefetcher for Thane region
     │   └── formatters.js           # INR currency & number formatters
     │
     ├── context/
@@ -140,6 +153,7 @@ The frontend additionally overlays three "Cost of Doing Nothing" tanker inflatio
 | Routing | React Router DOM v7 |
 | Styling | Tailwind CSS v4 |
 | Maps | React-Leaflet v5 + ESRI World Imagery tiles |
+| Offline Caching | Service Worker API (`public/sw.js`) + tile prefetcher (`mapPrefetch.js`) |
 | Geospatial | Turf.js v7 (polygon area calculation) |
 | Charts | Recharts v3 (ComposedChart, Area, Line, ReferenceLine) |
 | HTTP Client | Axios |
@@ -152,6 +166,10 @@ The frontend additionally overlays three "Cost of Doing Nothing" tanker inflatio
 | Framework | FastAPI ≥ 0.115 |
 | Server | Uvicorn (ASGI) |
 | Validation | Pydantic v2 |
+| ORM | SQLAlchemy ≥ 2.0 |
+| Database Migrations | Alembic ≥ 1.13 |
+| Database Driver | Psycopg2 (PostgreSQL) |
+| Configuration | Pydantic-Settings ≥ 2.0 |
 | HTTP Client | httpx (async, for Open-Meteo) |
 | PDF Generation | WeasyPrint ≥ 61.2 |
 | Templating | Jinja2 ≥ 3.1 |

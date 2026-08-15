@@ -18,4 +18,8 @@ def roi_simulate(payload: ROIRequest) -> ROIResponse:
         water_tariff_per_kl=payload.water_tariff_per_kl,
         installation_cost=payload.installation_cost,
         years=payload.years,
+        tariff_escalation_rate=payload.tariff_escalation_rate,
+        annual_tanker_spend=payload.annual_tanker_spend,
+        annual_tanker_volume_litres=payload.annual_tanker_volume_litres,
+        annual_municipal_spend=payload.annual_municipal_spend,
     )

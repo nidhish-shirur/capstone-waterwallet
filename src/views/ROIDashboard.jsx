@@ -15,7 +15,7 @@ const SCENARIOS = [
 ];
 
 // ─── ROI engine (pure function — no API) ────────────────────────────────────
-function runScenario({ annualTanker, annualMunicipal, capex, gamma }) {
+function runScenario({ annualTanker, annualMunicipal, capex, gamma, annualYield, annualDemand }) {
   const municipalInflation = 0.05;
   const rwhAmc             = 0.03;
   let cumulativeDoNothing  = 0;
@@ -23,13 +23,39 @@ function runScenario({ annualTanker, annualMunicipal, capex, gamma }) {
   let breakEven            = null;
   const rows               = [];
 
-  for (let i = 1; i <= 10; i++) {
-    const thisYearTanker     = annualTanker    * Math.pow(1 + gamma,             i - 1);
-    const thisYearMunicipal  = annualMunicipal * Math.pow(1 + municipalInflation, i - 1);
-    const thisYearRwhMaint   = capex * rwhAmc;
+  // Volumetric calculation in Litres
+  const demandL = annualDemand || 0;
+  const yieldL = annualYield || 0;
+  const tankCapacity = 50000;
+  const maxStorableYield = tankCapacity * 4.0;
+  const storableYield = Math.min(yieldL, maxStorableYield);
+  const effectiveYield = Math.min(storableYield, demandL);
 
-    cumulativeDoNothing += (thisYearTanker + thisYearMunicipal);
-    cumulativeRWH       += (thisYearMunicipal + thisYearRwhMaint);
+  // Default tanker rate of ₹150/kL = ₹0.15/L
+  // Derived tanker volume = tankerSpend (Lakhs) * 100,000 / 0.15
+  const annualTankerVolumeL = (annualTanker * 100000) / 0.15;
+  
+  const offsetTankerL = Math.min(effectiveYield, annualTankerVolumeL);
+  const offsetMunicipalL = Math.min(effectiveYield - offsetTankerL, Math.max(0, demandL - annualTankerVolumeL));
+
+  const savingsTankerLakhs = (offsetTankerL * 0.15) / 100000;
+  const savingsMunicipalLakhs = (offsetMunicipalL * 0.015) / 100000;
+
+  for (let i = 1; i <= 10; i++) {
+    const thisYearTankerSavings = savingsTankerLakhs * Math.pow(1 + gamma, i - 1);
+    const thisYearMunicipalSavings = savingsMunicipalLakhs * Math.pow(1 + municipalInflation, i - 1);
+    const thisYearSavings = thisYearTankerSavings + thisYearMunicipalSavings;
+
+    const thisYearTankerSpend = annualTanker * Math.pow(1 + gamma, i - 1);
+    const thisYearMunicipalSpend = annualMunicipal * Math.pow(1 + municipalInflation, i - 1);
+    
+    const thisYearDoNothing = thisYearTankerSpend + thisYearMunicipalSpend;
+    const thisYearRwhMaint = capex * rwhAmc;
+
+    const thisYearWithRWH = thisYearDoNothing - thisYearSavings + thisYearRwhMaint;
+
+    cumulativeDoNothing += thisYearDoNothing;
+    cumulativeRWH       += thisYearWithRWH;
 
     if (!breakEven && cumulativeRWH < cumulativeDoNothing) breakEven = `Y${i}`;
 
@@ -215,7 +241,14 @@ export default function ROIDashboard() {
   const { chartData, breakEvens, tenYearBleedRange } = useMemo(() => {
     const results = {};
     SCENARIOS.forEach((s) => {
-      results[s.key] = runScenario({ annualTanker, annualMunicipal, capex, gamma: s.gamma });
+      results[s.key] = runScenario({
+        annualTanker,
+        annualMunicipal,
+        capex,
+        gamma: s.gamma,
+        annualYield,
+        annualDemand,
+      });
     });
 
     // Merge rows into unified chart data object
@@ -239,7 +272,7 @@ export default function ROIDashboard() {
         high: results.highRisk.finalDoNothing.toFixed(2),
       },
     };
-  }, [annualTanker, annualMunicipal, capex]);
+  }, [annualTanker, annualMunicipal, capex, annualYield, annualDemand]);
 
   // ─── State to hold backend-computed ROI payback
   const [backendROI, setBackendROI] = useState(null);
@@ -258,7 +291,10 @@ export default function ROIDashboard() {
       water_tariff_per_kl: 15.0,
       installation_cost: adjustedCapex,
       years: 10,
-      tariff_escalation_rate: 0.08 // 8% current scenario rate
+      tariff_escalation_rate: 0.08, // 8% current scenario rate
+      annual_tanker_spend: annualTanker * 100000,
+      annual_tanker_volume_litres: (annualTanker * 100000) / 0.15,
+      annual_municipal_spend: annualMunicipal * 100000
     })
       .then((data) => {
         setBackendROI(data);
@@ -268,7 +304,7 @@ export default function ROIDashboard() {
         console.error("Backend ROI simulation error:", err);
         setLoadingROI(false);
       });
-  }, [annualDemand, annualYield, adjustedCapex]);
+  }, [annualDemand, annualYield, adjustedCapex, annualTanker, annualMunicipal]);
 
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const handleDownloadReport = useCallback(async () => {
