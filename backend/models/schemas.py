@@ -79,6 +79,70 @@ class ROIResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Monte Carlo ROI
+# ---------------------------------------------------------------------------
+class MonteCarloRequest(BaseModel):
+    rooftop_area_m2: float = Field(..., gt=0, description="Usable rooftop area in m²")
+    monthly_demand_kl: float = Field(..., gt=0, description="Monthly demand cap in KL")
+    capex_inr: float = Field(..., gt=0, description="One-time installation cost in INR")
+    tanker_rate_per_kl: float = Field(default=800.0, gt=0, description="Tanker water cost in INR/KL")
+    inflation_rate: float = Field(default=0.08, ge=0, le=0.5, description="Annual tanker price inflation")
+    n_scenarios: int = Field(default=1000, ge=100, le=5000, description="Number of Monte Carlo samples")
+
+class MonteCarloResponse(BaseModel):
+    median_breakeven_year: Optional[int]
+    mean_breakeven_year: Optional[float]
+    prob_breakeven_by_year: dict  # {"1": 0.02, "2": 0.45, ...}
+    percentiles: dict             # {"p10": int, "p50": int, "p90": int}
+    n_scenarios: int
+    never_break_even_pct: float
+    scenarios_used: str
+
+
+# ---------------------------------------------------------------------------
+# ML Recommend
+# ---------------------------------------------------------------------------
+class MLRecommendRequest(BaseModel):
+    rooftop_area: float = Field(..., gt=0, description="Rooftop area in m²")
+    borewell: int = Field(..., ge=0, le=1, description="1 if borewell exists, 0 otherwise")
+    borewell_depth: float = Field(default=0.0, ge=0, description="Borewell depth in metres")
+    soil_perm: int = Field(..., ge=1, le=5, description="Soil permeability class (1=very low, 5=very high)")
+    coastal_km: float = Field(..., gt=0, description="Distance from coast in km")
+    annual_rain_mm: float = Field(..., gt=0, description="Annual rainfall in mm")
+    peak_day_mm: float = Field(..., gt=0, description="Peak single-day rainfall in mm")
+
+class SHAPValue(BaseModel):
+    feature: str
+    value: float
+    shap: float
+
+class MLRecommendResponse(BaseModel):
+    config: str                     # "Storage-Only" | "Borewell-Recharge" | "Hybrid"
+    confidence: float               # 0–1 probability
+    source: str                     # "rf_classifier" | "tier1_safety_gate"
+    safety_triggered: bool
+    safety_reason: Optional[str]
+    shap_values: list[SHAPValue]
+    plain_language: str
+
+
+# ---------------------------------------------------------------------------
+# ML Yield
+# ---------------------------------------------------------------------------
+class MLYieldRequest(BaseModel):
+    rooftop_area_m2: float = Field(..., gt=0, description="Rooftop area in m²")
+    monthly_rainfall_mm: list[float] = Field(
+        ..., min_length=12, max_length=12,
+        description="List of 12 monthly rainfall values in mm"
+    )
+
+class MLYieldResponse(BaseModel):
+    monthly_yield_kl: list[float]   # 12 values
+    annual_yield_kl: float
+    source: str                     # "rf_regressor" | "physics_formula"
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 class ReportRequest(BaseModel):

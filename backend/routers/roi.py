@@ -1,6 +1,7 @@
 from fastapi import APIRouter
-from models.schemas import ROIRequest, ROIResponse
+from models.schemas import ROIRequest, ROIResponse, MonteCarloRequest, MonteCarloResponse
 from services.roi_engine import simulate_roi
+from services.monte_carlo import run_monte_carlo
 
 router = APIRouter()
 
@@ -23,3 +24,23 @@ def roi_simulate(payload: ROIRequest) -> ROIResponse:
         annual_tanker_volume_litres=payload.annual_tanker_volume_litres,
         annual_municipal_spend=payload.annual_municipal_spend,
     )
+
+
+@router.post("/monte-carlo", response_model=MonteCarloResponse)
+def roi_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResponse:
+    """
+    Run 1,000-scenario Monte Carlo ROI simulation.
+    Samples monthly rainfall from the P10–P90 historical percentile table
+    and returns the probability distribution of break-even year.
+
+    Output: "72% chance of break-even by Year 3, 91% by Year 4."
+    """
+    result = run_monte_carlo(
+        rooftop_area_m2   = payload.rooftop_area_m2,
+        monthly_demand_kl = payload.monthly_demand_kl,
+        capex_inr         = payload.capex_inr,
+        tanker_rate_per_kl = payload.tanker_rate_per_kl,
+        inflation_rate    = payload.inflation_rate,
+        n_scenarios       = payload.n_scenarios,
+    )
+    return MonteCarloResponse(**result)

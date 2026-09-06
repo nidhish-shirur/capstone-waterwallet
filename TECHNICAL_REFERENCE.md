@@ -1,7 +1,7 @@
 # WaterWallet — Technical Reference
 
-> Complete documentation of logic, formulas, and libraries for all three phases.  
-> **Stack:** React 19 + Vite (frontend) · FastAPI + Python 3 (backend)
+> Complete documentation of logic, formulas, algorithms, machine learning models, and API specifications across all application layers.  
+> **Stack:** React 19 + Vite (frontend) · FastAPI + Python 3 + Scikit-Learn + SHAP (backend)
 
 ---
 
@@ -11,9 +11,16 @@
 2. [Phase 1 — Virtual Meter](#phase-1--virtual-meter)
 3. [Phase 2 — Map Studio](#phase-2--map-studio)
 4. [Phase 3 — ROI Dashboard](#phase-3--roi-dashboard)
-5. [Backend API Layer](#backend-api-layer)
-6. [Library Reference](#library-reference)
-7. [Data Flow Diagram](#data-flow-diagram)
+5. [Machine Learning & Decision Support System](#machine-learning--decision-support-system)
+   - [Dual-Tier Architecture](#dual-tier-architecture)
+   - [Tier 1 — Hard Hydrogeological Safety Gate](#tier-1--hard-hydrogeological-safety-gate)
+   - [Tier 2 — RF System Classifier & SHAP Explainability](#tier-2--rf-system-classifier--shap-explainability)
+   - [RF Monthly Yield Regressor & Physics Fallback](#rf-monthly-yield-regressor--physics-fallback)
+   - [1,000-Scenario Monte Carlo ROI Engine](#1000-scenario-monte-carlo-roi-engine)
+6. [Backend API Layer & Endpoints](#backend-api-layer--endpoints)
+7. [Pydantic Schemas & Data Validation](#pydantic-schemas--data-validation)
+8. [Library Reference](#library-reference)
+9. [Data Flow Diagram](#data-flow-diagram)
 
 ---
 
@@ -326,23 +333,139 @@ Content included: society header, financial KPI summary, break-even table (3 sce
 
 ---
 
-## Backend API Layer
+## Machine Learning & Decision Support System
+
+**Files:** `backend/services/tier1_safety.py`, `backend/services/ml_engine.py`, `backend/services/monte_carlo.py`, `backend/ml_models/train_models.py`
+
+### Dual-Tier Architecture
+
+WaterWallet implements a physics-informed dual-tier decision engine for recommending RWH configurations:
+
+```
+                      ┌────────────────────────────────────────┐
+                      │        Input Site Parameters           │
+                      │ coastal_km, soil_perm, borewell, depth │
+                      └───────────────────┬────────────────────┘
+                                          │
+                                          ▼
+                      ┌────────────────────────────────────────┐
+                      │    Tier 1: Hard Safety Gate            │
+                      │    (Hydrogeological Rules Check)       │
+                      └───────────┬────────────────┬───────────┘
+                                  │                │
+                        Violated  │                │ Passed
+                                  ▼                ▼
+                 ┌──────────────────────┐  ┌──────────────────────┐
+                 │ Force "Storage-Only" │  │ Tier 2: RF Classifier│
+                 │ confidence = 1.0     │  │ + SHAP Explainability│
+                 └──────────────────────┘  └──────────────────────┘
+```
+
+### Tier 1 — Hard Hydrogeological Safety Gate
+
+**File:** `backend/services/tier1_safety.py`
+
+Safety rules take absolute precedence over machine learning model probabilities. If physical or geological constraints render groundwater recharge unsafe or impossible, Tier 1 forces a **Storage-Only** recommendation with `confidence = 1.0` and `safety_triggered = True`.
+
+| Rule ID | Hydrogeological Condition | Action | Rationale & Reference |
+|---|---|---|---|
+| `RULE_1` | `coastal_km ≤ 2.5 km` | Force `Storage-Only` | CGWB / BMC guideline: Artificial recharge near coastline causes seawater intrusion into coastal aquifers. |
+| `RULE_2` | `soil_perm == 1 AND borewell == 0` | Force `Storage-Only` | Class 1 soil (clay/hard rock) lacks permeability. Without an injection borewell, surface recharge is physically infeasible. |
+| `RULE_3` | `borewell == 1 AND borewell_depth < 30 m` | Force `Storage-Only` | Shallow borewells (<30 m) inject runoff into unconfined topsoil aquifers, risking contamination. Minimum 30 m depth required. |
+
+### Tier 2 — RF System Classifier & SHAP Explainability
+
+**File:** `backend/services/ml_engine.py`  
+**Trained Model:** `waterwallet_config_classifier.pkl` (Random Forest Classifier)
+
+When Tier 1 passes, the payload is evaluated by a Random Forest Classifier trained on hydrogeological survey datasets.
+
+**Input Features (7):**
+1. `rooftop_area` (m²)
+2. `borewell` (0 or 1)
+3. `borewell_depth` (m)
+4. `soil_perm` (Class 1–5)
+5. `coastal_km` (km)
+6. `annual_rain_mm` (mm)
+7. `peak_day_mm` (mm)
+
+**Target Configurations:**
+- `Storage-Only`
+- `Borewell-Recharge`
+- `Hybrid`
+
+**SHAP Attribution & Plain Language Generation:**
+- Generates feature contribution weights using `shap.TreeExplainer`.
+- Evaluates class probability distribution and outputs positive driver features.
+- Constructs an intuitive, plain-English summary (e.g., *"Hybrid recommended because rooftop area (960 m²), borewell depth (45 m), and coastal distance (6 km) support this configuration."*).
+
+### RF Monthly Yield Regressor & Physics Fallback
+
+**File:** `backend/services/ml_engine.py`  
+**Trained Model:** `waterwallet_yield_model.pkl` (Random Forest Regressor)
+
+Predicts monthly harvestable yield (KL) by incorporating rainfall dynamics, seasonality, and precipitation lags.
+
+**Input Features (10):**
+`rooftop_area`, `month`, `rain_mm`, `annual_rain_mm`, `peak_day`, `lag1_rain`, `lag2_rain`, `lag3_rain`, `sin_month`, `cos_month`
+
+**Physics Fallback Mechanism:**
+If `waterwallet_yield_model.pkl` is absent or uninitialized, the engine automatically falls back to the deterministic runoff equation:
+
+$$\text{Yield (KL)} = \frac{\text{rooftop\_area} \times \text{rain\_mm} \times \text{usability\_factor} \times \text{runoff\_coeff}}{1000}$$
+
+Where defaults are `usability_factor = 0.80` and `runoff_coeff = 0.90`. Response header sets `source: "physics_formula"`.
+
+### 1,000-Scenario Monte Carlo ROI Engine
+
+**File:** `backend/services/monte_carlo.py`
+
+Replaces static payback estimates with probabilistic risk modeling.
+
+1. **Sampling:** Performs $N = 1,000$ iterations by uniformly sampling monthly rainfall between historical $P_{10}$ and $P_{90}$ monthly precipitation distributions derived from Thane climatological archives (`thane_rain_percentiles.csv`).
+2. **Yield & Demand Gating:** Computes monthly yield per sample and applies a hard monthly demand cap:
+   $$\text{Usable Yield}_m = \min(\text{Yield}_m, \text{Demand}_m)$$
+3. **Financial Escalation:** Simulates 10-year cash flows applying compound annual tanker inflation ($\gamma = 8\%$) vs. fixed maintenance costs ($\text{AMC} = 3\% \text{ of Capex}$).
+4. **Output Metrics:** Returns cumulative break-even probability distributions across Years 1–10 (e.g., *"72% chance of break-even by Year 3, 91% by Year 4"*), median break-even year, $P_{10}/P_{50}/P_{90}$ percentiles, and risk percentage of never breaking even within 10 years.
+
+---
+
+## Backend API Layer & Endpoints
 
 **Framework:** FastAPI 0.115+  
-**Entry point:** `backend/main.py`  
+**Entry Point:** `backend/main.py`  
 **Base URL:** `http://localhost:8000`
 
-### Endpoints
+### Endpoints Overview
+
+| Method | Path | Description | Router Tag |
+|---|---|---|---|
+| `GET` | `/` | Service health check | Root |
+| `POST` | `/api/societies/baseline` | IS 1172 canonical daily demand calculation | Societies |
+| `POST` | `/api/societies` | Save new society profile (DB CRUD) | Societies |
+| `GET` | `/api/societies/{id}` | Fetch society details & billing history | Societies |
+| `POST` | `/api/societies/{id}/billing` | Add billing entry row (DB CRUD) | Societies |
+| `POST` | `/api/catchment/calculate` | Open-Meteo historical rainfall + yield | Geospatial |
+| `POST` | `/api/roi/simulate` | Deterministic 10-year ROI simulation | ROI |
+| `POST` | `/api/roi/monte-carlo` | 1,000-scenario Monte Carlo ROI simulation | ROI |
+| `POST` | `/api/ml/recommend` | Dual-tier RWH config recommendation + SHAP | ML — Recommend |
+| `POST` | `/api/ml/yield` | Random Forest monthly yield prediction | ML — Yield |
+| `POST` | `/api/report/generate` | Server-side PDF report generator (HTTP 501) | Report |
+
+---
+
+### Detailed Endpoint Specifications
 
 #### `POST /api/societies/baseline`
-Calculates IS 1172 daily water demand.
+Calculates IS 1172 daily water demand with optional distribution losses and peak buffer.
 
-**Request:**
+**Request Payload:**
 ```json
 {
   "num_flats": 50,
   "occupants_per_flat": 4.0,
-  "lpcd_override": null
+  "lpcd_override": null,
+  "include_losses": true
 }
 ```
 
@@ -350,29 +473,24 @@ Calculates IS 1172 daily water demand.
 ```json
 {
   "total_occupants": 200,
-  "daily_demand_lpd": 27000.0,
-  "daily_demand_with_buffer_lpd": 29700.0
+  "base_demand_lpd": 27000.0,
+  "daily_demand_lpd": 31050.0,
+  "daily_demand_with_buffer_lpd": 34155.0
 }
-```
-
-**Formula (in `services/demand_engine.py`):**
-```python
-total_occupants         = round(num_flats × occupants_per_flat)
-daily_demand_lpd        = total_occupants × lpcd
-daily_demand_with_buffer = daily_demand_lpd × DEMAND_BUFFER_FACTOR  # × 1.10
 ```
 
 ---
 
 #### `POST /api/catchment/calculate`
-Fetches real rainfall from Open-Meteo and computes annual + monthly yield.
+Fetches historical precipitation from Open-Meteo API and calculates annual & monthly harvestable yield.
 
-**Request:**
+**Request Payload:**
 ```json
 {
   "latitude": 19.2183,
   "longitude": 72.9781,
-  "roof_area_sqm": 960.0
+  "roof_area_sqm": 960.0,
+  "roof_surface_type": "concrete"
 }
 ```
 
@@ -380,181 +498,253 @@ Fetches real rainfall from Open-Meteo and computes annual + monthly yield.
 ```json
 {
   "annual_rainfall_mm": 2347.0,
-  "monthly_rainfall_mm": [1, 1, 2, 18, 110, 510, 710, 580, 300, 95, 18, 2],
-  "annual_yield_litres": 1283673.6,
-  "monthly_yield_litres": [...]
+  "monthly_rainfall_mm": [1.0, 1.0, 2.0, 18.0, 110.0, 510.0, 710.0, 580.0, 300.0, 95.0, 18.0, 2.0],
+  "annual_yield_litres": 1617840.0,
+  "monthly_yield_litres": [691.2, 691.2, 1382.4, 12441.6, 75924.0, 351864.0, 489888.0, 399936.0, 207360.0, 65520.0, 12441.6, 1382.4]
 }
 ```
-
-**Yield formula (in `services/yield_engine.py`):**
-```python
-yield_litres = rain_mm × roof_area_sqm × ROOF_RUNOFF_COEFFICIENTS[roof_surface_type] × USABILITY_FACTOR
-             = rain_mm × roof_area_sqm × 0.90 × 0.80   [for Concrete default]
-             = rain_mm × roof_area_sqm × 0.72
-```
-
-**Rainfall API** (`services/rainfall_api.py`):
-- Source: Open-Meteo Climate Archive (`archive-api.open-meteo.com`) — free, no API key
-- Fetches the most recent complete calendar year (`today().year - 1`)
-- Aggregates daily precipitation to 12 monthly totals
-- `None` precipitation values coerced to `0.0` via `or 0.0`
 
 ---
 
 #### `POST /api/roi/simulate`
-Runs a multi-year ROI simulation.
+Executes a deterministic multi-year payback analysis.
 
-**Request:**
+**Request Payload:**
 ```json
 {
-  "daily_demand_lpd": 29700.0,
-  "annual_yield_litres": 1283673.6,
+  "daily_demand_lpd": 34155.0,
+  "annual_yield_litres": 1617840.0,
   "tank_capacity_litres": 50000,
   "water_tariff_per_kl": 15.0,
-  "installation_cost": 250000,
-  "years": 10
+  "installation_cost": 250000.0,
+  "years": 10,
+  "tariff_escalation_rate": 0.05
 }
 ```
 
 **Response:**
 ```json
 {
-  "payback_years": 9.80,
+  "payback_years": 9.8,
+  "total_period_savings": 255000.0,
   "ten_year_savings": 255000.0,
   "yearly_breakdown": [
-    { "year": 1, "savings": 25500.0, "cumulative_savings": 25500.0, "net_benefit": -224500.0 },
-    ...
+    { "year": 1, "savings": 25500.0, "cumulative_savings": 25500.0, "net_benefit": -224500.0 }
   ]
 }
 ```
 
-**Formula (in `services/roi_engine.py`):**
-```python
-annual_demand_litres   = daily_demand_lpd × 365
-effective_annual_yield = min(annual_yield_litres, annual_demand_litres)
-effective_yield_kl     = effective_annual_yield / 1000
+---
 
-annual_savings         = effective_yield_kl × water_tariff_per_kl
-cumulative_savings[y]  = annual_savings × y           # constant rate — no escalation
+#### `POST /api/roi/monte-carlo`
+Runs 1,000 stochastic simulations sampling rainfall between $P_{10}$ and $P_{90}$ percentiles.
 
-# Payback interpolation (within the break-even year):
-excess        = cumulative_savings - installation_cost
-payback_years = year - (excess / annual_savings)
+**Request Payload:**
+```json
+{
+  "rooftop_area_m2": 960.0,
+  "monthly_demand_kl": 1000.0,
+  "capex_inr": 480000.0,
+  "tanker_rate_per_kl": 800.0,
+  "inflation_rate": 0.08,
+  "n_scenarios": 1000
+}
 ```
 
-**Pydantic validation guards:**
-- `water_tariff_per_kl > 0` — enforced by both `@field_validator` and a service-layer guard (prevents division-by-zero in payback interpolation)
-- `num_flats > 0`, `occupants_per_flat > 0`, `roof_area_sqm > 0`
-- `years` range: 1–30
+**Response:**
+```json
+{
+  "median_breakeven_year": 3,
+  "mean_breakeven_year": 3.12,
+  "prob_breakeven_by_year": {
+    "1": 0.02,
+    "2": 0.45,
+    "3": 0.72,
+    "4": 0.91,
+    "5": 0.98,
+    "6": 1.0,
+    "7": 1.0,
+    "8": 1.0,
+    "9": 1.0,
+    "10": 1.0
+  },
+  "percentiles": { "p10": 2, "p50": 3, "p90": 4 },
+  "n_scenarios": 1000,
+  "never_break_even_pct": 0.0,
+  "scenarios_used": "percentile_table"
+}
+```
 
 ---
 
-#### `POST /api/report/generate`
-**Status: HTTP 501 Not Implemented**  
-Returns a structured error explaining WeasyPrint GTK3 dependency requirement. Use the in-browser print from the ROI Dashboard instead.
+#### `POST /api/ml/recommend`
+Evaluates physical safety constraints (Tier 1) followed by RF Classifier inference with SHAP explanations (Tier 2).
+
+**Request Payload:**
+```json
+{
+  "rooftop_area": 960.0,
+  "borewell": 1,
+  "borewell_depth": 45.0,
+  "soil_perm": 3,
+  "coastal_km": 6.5,
+  "annual_rain_mm": 2347.0,
+  "peak_day_mm": 180.0
+}
+```
+
+**Response (Tier 2 ML path):**
+```json
+{
+  "config": "Hybrid",
+  "confidence": 0.96,
+  "source": "rf_classifier",
+  "safety_triggered": false,
+  "safety_reason": null,
+  "shap_values": [
+    { "feature": "rooftop_area", "value": 960.0, "shap": 0.3214 },
+    { "feature": "borewell_depth", "value": 45.0, "shap": 0.2105 }
+  ],
+  "plain_language": "Hybrid recommended because rooftop area (960 m²), borewell depth (45 m), and coastal distance (7 km) support this configuration."
+}
+```
+
+**Response (Tier 1 Safety Gate Triggered path):**
+```json
+{
+  "config": "Storage-Only",
+  "confidence": 1.0,
+  "source": "tier1_safety_gate",
+  "safety_triggered": true,
+  "safety_reason": "Site is only 1.8 km from the coast. CGWB guidelines require a minimum of 2.5 km from the coastline before groundwater recharge is safe. Recharge at this location risks seawater intrusion into aquifers.",
+  "shap_values": [],
+  "plain_language": "Site is only 1.8 km from the coast. CGWB guidelines require a minimum of 2.5 km from the coastline before groundwater recharge is safe. Recharge at this location risks seawater intrusion into aquifers."
+}
+```
 
 ---
 
-### Pydantic Schemas (`backend/models/schemas.py`)
+#### `POST /api/ml/yield`
+Predicts monthly yield using Random Forest Regressor, with physics fallback.
 
+**Request Payload:**
+```json
+{
+  "rooftop_area_m2": 960.0,
+  "monthly_rainfall_mm": [1.0, 1.0, 2.0, 18.0, 110.0, 510.0, 710.0, 580.0, 300.0, 95.0, 18.0, 2.0]
+}
 ```
-SocietyBaselineRequest   → SocietyBaselineResponse
-CatchmentRequest         → CatchmentResponse
-ROIRequest               → ROIResponse (contains list[YearlyROI])
-ReportRequest            → (streams PDF bytes / currently 501)
+
+**Response:**
+```json
+{
+  "monthly_yield_kl": [0.691, 0.691, 1.382, 12.442, 75.924, 351.864, 489.888, 399.936, 207.36, 65.52, 12.442, 1.382],
+  "annual_yield_kl": 1619.532,
+  "source": "rf_regressor"
+}
 ```
+
+---
+
+## Pydantic Schemas & Data Validation
+
+**File:** `backend/models/schemas.py`
+
+Key Pydantic models enforcing structural, numeric, and domain-level integrity:
+
+| Schema Name | Role | Critical Validation Constraints |
+|---|---|---|
+| `SocietyBaselineRequest` | Demand payload | `num_flats > 0`, `occupants_per_flat > 0`, `lpcd_override ≤ 1000` |
+| `CatchmentRequest` | Geospatial payload | `latitude ∈ [-90, 90]`, `longitude ∈ [-180, 180]`, `roof_area_sqm > 0` |
+| `ROIRequest` | Simulation payload | `water_tariff_per_kl > 0` (custom `@field_validator` prevents zero-division) |
+| `MonteCarloRequest` | Stochastic ROI payload | `n_scenarios ∈ [100, 5000]`, `inflation_rate ∈ [0, 0.5]` |
+| `MLRecommendRequest` | ML System payload | `borewell ∈ [0, 1]`, `soil_perm ∈ [1, 5]`, `coastal_km > 0` |
+| `MLYieldRequest` | ML Yield payload | `monthly_rainfall_mm` length enforced strictly to 12 elements |
+| `SHAPValue` | Feature attribution | Captures `feature`, input `value`, and `shap` contribution score |
 
 ---
 
 ## Library Reference
 
-### Frontend (`package.json` dependencies)
+### Frontend Dependencies (`package.json`)
 
 | Library | Version | Role |
 |---|---|---|
-| `react` | ^19.2 | UI component framework |
+| `react` | ^19.2 | Core UI component framework |
 | `react-dom` | ^19.2 | DOM renderer |
-| `react-router-dom` | ^7.14 | Client-side routing (BrowserRouter, Routes, Navigate) |
-| `react-leaflet` | ^5.0 | React bindings for Leaflet.js interactive maps |
-| `leaflet` | ^1.9.4 | Core mapping engine — tile layers, polygons, markers |
-| `@turf/turf` | ^7.3.4 | Geospatial geometry — geodesic polygon area (WGS84) |
-| `recharts` | ^3.8 | SVG chart library — bar, line, composed, area charts |
-| `lucide-react` | ^1.6 | Icon set — used throughout for UI icons |
+| `react-router-dom` | ^7.14 | Client-side SPA routing (`BrowserRouter`, `Routes`) |
+| `react-leaflet` | ^5.0 | React components for Leaflet maps |
+| `leaflet` | ^1.9.4 | Mapping tile renderer & vector polygon tracer |
+| `@turf/turf` | ^7.3.4 | Geospatial measurement (geodesic WGS84 area calculation) |
+| `recharts` | ^3.8 | SVG charting engine (Composed line/bar, area charts) |
+| `lucide-react` | ^1.6 | Visual icon set |
 
 ### Frontend Dev Dependencies
 
 | Library | Role |
 |---|---|
-| `vite` | Build tool + dev server (HMR) |
-| `@vitejs/plugin-react` | Vite plugin for JSX transform |
-| `tailwindcss` | Utility-first CSS framework |
-| `@tailwindcss/vite` | Vite integration for Tailwind v4 |
-| `eslint` + plugins | Linting (react-hooks, react-refresh rules) |
+| `vite` | Next-gen frontend toolchain & dev server |
+| `@vitejs/plugin-react` | Fast Refresh JSX plugin |
+| `tailwindcss` | Utility-first styling engine (v4) |
+| `@tailwindcss/vite` | Tailwind CSS v4 Vite integration |
+| `eslint` | Code quality and React Hooks linter |
 
-### Backend (`requirements.txt`)
+### Backend Dependencies (`backend/requirements.txt`)
 
 | Library | Version | Role |
 |---|---|---|
-| `fastapi` | ≥0.115 | ASGI web framework — routing, dependency injection, OpenAPI docs |
-| `uvicorn[standard]` | ≥0.30 | ASGI server — runs the FastAPI app |
-| `pydantic` | ≥2.10 | Request/response validation, field validators, type coercion |
-| `httpx` | ≥0.27 | Async HTTP client — fetches Open-Meteo rainfall API |
-| `jinja2` | ≥3.1.4 | HTML templating for PDF report (template in `backend/templates/`) |
-| `weasyprint` | ≥61.2 | HTML→PDF converter (requires GTK3 — currently disabled, returns 501) |
-| `python-multipart` | ≥0.0.9 | Multipart form data support for FastAPI |
-
-### External APIs & Data Sources
-
-| Service | Usage | Auth |
-|---|---|---|
-| **Open-Meteo Climate Archive** | Daily historical precipitation — backend `/api/catchment/calculate` | None (free) |
-| **Open-Meteo Archive** | 10-year daily precipitation for Thane — MapStudio frontend fetch | None (free) |
-| **Esri World Imagery** | Satellite tile layer for Leaflet map | None (public tiles) |
+| `fastapi` | ≥0.115.0 | Modern high-performance ASGI API framework |
+| `uvicorn[standard]` | ≥0.30.0 | High-performance ASGI server |
+| `pydantic` | ≥2.10.0 | Data parsing, type coercion, and validation |
+| `scikit-learn` | ≥1.4.0 | Machine learning model training & inference (`RandomForest`) |
+| `shap` | ≥0.44.0 | TreeExplainer model interpretability & feature attributions |
+| `joblib` | ≥1.3.0 | Model serialization (`.pkl` loading) |
+| `numpy` | ≥1.26.0 | Array manipulation & numerical calculations |
+| `pandas` | ≥2.2.0 | Tabular data processing for ML feature pipelines |
+| `httpx` | ≥0.27.0 | Async HTTP client for Open-Meteo rainfall API |
+| `jinja2` | ≥3.1.4 | Templating engine for PDF reports |
+| `sqlalchemy` | ≥2.0.0 | ORM database interface |
+| `alembic` | ≥1.13.0 | Relational database schema migrations |
+| `weasyprint` | ≥61.2 | HTML-to-PDF compiler (requires GTK3 runtime) |
 
 ---
 
 ## Data Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     WaterWalletContext                          │
-│  societyName · flats · occupants · totalTankerSpend             │
-│  totalMunicipal · billingMonths · annualDemand                  │
-│  estimatedCapex · annualYield · monthlyRainfall                 │
-│  capexRatePerSqm · monthlyDemand (derived)                      │
-└───────────┬─────────────────────────────┬───────────────────────┘
-            │ writes                      │ reads
-            ▼                             ▼
-┌───────────────────┐          ┌──────────────────────┐
-│  Phase 1          │          │  Phase 3             │
-│  Virtual Meter    │          │  ROI Dashboard       │
-│                   │          │                      │
-│  calculateCanon-  │          │  runScenario()       │
-│  icalDemand()     │          │  3× inflation paths  │
-│  → annualDemand   │          │  Break-even detect   │
-│  → tanker totals  │          │  Self-sufficiency %  │
-└───────────────────┘          └──────────────────────┘
-            │ writes (on proceed)
-            ▼
-┌───────────────────────────────────────────────────────────────┐
-│  Phase 2 — Map Studio                                         │
-│                                                               │
-│  Open-Meteo API → 10-yr avg rainfall (Thane)                 │
-│  Leaflet click → polygon vertices                             │
-│  Turf.js → geodesic area (m²)                                │
-│  × OBSTACLE_FACTOR → usableArea                              │
-│  × RUNOFF_COEFF × rainfall → maxYield (L/yr)                 │
-│  × CAPEX_RATE_PER_SQM → estimatedCapex (₹)                  │
-│  → writes estimatedCapex, annualYield, monthlyRainfall        │
-└───────────────────────────────────────────────────────────────┘
-
-Backend API (optional — called by frontend when needed):
-  POST /api/society/baseline   → IS 1172 demand (Steps 1 + 4)
-  POST /api/catchment/calculate → Open-Meteo rainfall + yield
-  POST /api/roi/simulate        → multi-year payback simulation
-  POST /api/report/generate     → HTTP 501 (WeasyPrint pending)
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 WaterWalletContext                                     │
+│  societyName · flats · occupants · totalTankerSpend · totalMunicipal · billingMonths   │
+│  annualDemand · estimatedCapex · annualYield · monthlyRainfall · capexRatePerSqm       │
+└───────────────┬───────────────────────────────┬───────────────────────────────┬────────┘
+                │ writes                        │ reads                         │ reads
+                ▼                               ▼                               ▼
+┌───────────────────────────────┐ ┌───────────────────────────────┐ ┌───────────────────────────────┐
+│ Phase 1 — Virtual Meter       │ │ Phase 2 — Map Studio          │ │ Phase 3 — ROI Dashboard       │
+│                               │ │                               │ │                               │
+│ calculateCanonicalDemand()    │ │ Open-Meteo API (10-yr rainfall)│ │ runScenario() (3 cost paths)  │
+│ → base, adjusted demand       │ │ Leaflet rooftop polygon trace │ │ Break-even detection          │
+│ → billing aggregation         │ │ Turf.js geodesic m² area      │ │ Self-sufficiency ratio        │
+│ → syncs annualDemand          │ │ → syncs capex, yield, rain    │ │ In-browser PDF report printer │
+└───────────────────────────────┘ └───────────────────────────────┘ └───────────────────────────────┘
+                │                               │                               │
+                └───────────────────────────────┼───────────────────────────────┘
+                                                │
+                                                ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                               FastAPI Backend API Layer                                │
+│                                                                                        │
+│  POST /api/societies/baseline   ➜ IS 1172 demand engine (demand_engine.py)             │
+│  POST /api/catchment/calculate  ➜ Open-Meteo API & yield calculation (yield_engine.py) │
+│  POST /api/roi/simulate         ➜ Deterministic multi-year payback (roi_engine.py)     │
+│  POST /api/roi/monte-carlo      ➜ 1,000-scenario stochastic ROI (monte_carlo.py)       │
+│  POST /api/ml/recommend         ➜ Tier 1 Hydrogeology Gate (tier1_safety.py)            │
+│                                   ➜ Tier 2 RF Classifier + SHAP (ml_engine.py)          │
+│  POST /api/ml/yield             ➜ RF Regressor monthly yield prediction (ml_engine.py) │
+│  POST /api/report/generate      ➜ HTTP 501 (WeasyPrint GTK3 pending)                    │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-*Generated: 2026-04-26 · WaterWallet v1.0 · IS 1172 Compliant*
+*Updated: 2026-09-02 · WaterWallet v2.0 · Physics-Informed ML & Decision Support System*

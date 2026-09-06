@@ -32,7 +32,7 @@ export const fetchCatchmentData = (payload) =>
   api.post("/api/catchment/calculate", payload).then((r) => r.data);
 
 // ---------------------------------------------------------------------------
-// ROI — multi-year simulation
+// ROI — multi-year simulation & ML Monte Carlo
 // ---------------------------------------------------------------------------
 
 /**
@@ -42,29 +42,26 @@ export const fetchCatchmentData = (payload) =>
 export const simulateROI = (payload) =>
   api.post("/api/roi/simulate", payload).then((r) => r.data);
 
+/**
+ * Runs 1,000-scenario Monte Carlo ROI simulation.
+ * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, tanker_rate_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
+ * @returns {Promise<{ median_breakeven_year: number, prob_breakeven_by_year: object, percentiles: object, n_scenarios: number, never_break_even_pct: number, scenarios_used: string }>}
+ */
+export const runMonteCarlo = (payload) =>
+  api.post("/api/roi/monte-carlo", payload).then((r) => r.data);
+
 // ---------------------------------------------------------------------------
-// Report — PDF generation
+// ML — Dual-tier recommendation & SHAP explanations
 // ---------------------------------------------------------------------------
 
 /**
- * Fetches the generated PDF as a Blob and triggers a browser download.
- * @param {{ society_data, catchment_data, roi_data, society_name? }} payload
+ * Calls Tier 1 Safety Gate & Tier 2 RF Classifier + SHAP.
+ * @param {{ rooftop_area: number, borewell: number, borewell_depth: number, soil_perm: number, coastal_km: number, annual_rain_mm: number, peak_day_mm: number }} payload
+ * @returns {Promise<{ config: string, confidence: number, source: string, safety_triggered: boolean, safety_reason?: string, shap_values: Array, plain_language: string }>}
  */
-export const downloadReport = async (payload) => {
-  const response = await api.post("/api/report/generate", payload, {
-    responseType: "blob",
-  });
-  const url = window.URL.createObjectURL(new Blob([response.data]));
-  const link = document.createElement("a");
-  link.href = url;
-  link.setAttribute("download", "waterwallet-report.pdf");
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(url);
-};
+export const getMLRecommendation = (payload) =>
+  api.post("/api/ml/recommend", payload).then((r) => r.data);
 
-// ---------------------------------------------------------------------------
 // Database CRUD Operations
 // ---------------------------------------------------------------------------
 

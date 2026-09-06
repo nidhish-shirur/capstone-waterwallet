@@ -16,7 +16,7 @@ import { useWaterWallet } from '../context/WaterWalletContext';
 import { fetchCatchmentData } from '../api/waterwallet';
 import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
 import { formatLitres, formatRupees, formatRainfall, formatArea } from '../utils/formatters';
-import { prefetchThaneMapTiles } from '../utils/mapPrefetch';
+
 
 // ─── Fix Leaflet's broken default marker icons in Vite ───────────────────────
 delete L.Icon.Default.prototype._getIconUrl;
@@ -31,11 +31,11 @@ const THANE_CENTER = [19.2183, 72.9781];
 const CAPEX_RATE_PER_SQM = 600;  // ₹ per m² (MMR parametric DSR rate)
 const OBSTACLE_FACTOR = 0.80; // 20% deduction for roof obstacles
 
-// Open-Meteo archive: 10 full years of daily precipitation for Thane
+// Open-Meteo archive: 15 full years of daily precipitation for Thane (2010-2025)
 const WEATHER_API_URL =
   'https://archive-api.open-meteo.com/v1/archive' +
   '?latitude=19.2183&longitude=72.9781' +
-  '&start_date=2015-01-01&end_date=2024-12-31' +
+  '&start_date=2010-01-01&end_date=2024-12-31' +
   '&daily=precipitation_sum&timezone=Asia/Kolkata';
 
 // ─── Esri World Imagery ──────────────────────────────────────────────────────
@@ -200,10 +200,7 @@ export default function MapStudio() {
       });
   }, []);
 
-  // Prefetch Thane map tiles on mount to cache them offline
-  useEffect(() => {
-    prefetchThaneMapTiles();
-  }, []);
+
 
   const effectiveRainfall = annualRainfall || 2500;
 
@@ -294,7 +291,7 @@ export default function MapStudio() {
       icon: Cloud,
       label: 'Live Rainfall Data',
       value: weatherLoading ? 'Fetching…' : formatRainfall(effectiveRainfall),
-      unit: weatherError ? 'Thane fallback (IITM normals)' : '10-year avg (2015–2024) · Open-Meteo',
+      unit: weatherError ? 'Thane fallback (IITM normals)' : '15-year avg (2010–2025) · Open-Meteo',
       color: 'text-blue-600', bg: 'bg-blue-50', highlight: false,
     },
     {
@@ -454,7 +451,7 @@ export default function MapStudio() {
             <div className="bg-white rounded-2xl shadow-md p-4 border border-slate-100">
               <p className="text-xs font-semibold text-slate-700 mb-1">Seasonal Rainfall vs Demand</p>
               <p className="text-xs text-slate-400 mb-3">
-                10-yr avg · <span className="text-blue-600 font-medium">Blue = monsoon months</span>
+                15-yr avg · <span className="text-blue-600 font-medium">Blue = monsoon months</span>
               </p>
               <RainfallDemandChart monthlyMm={monthlyMm} monthlyDemand={monthlyDemand} />
             </div>

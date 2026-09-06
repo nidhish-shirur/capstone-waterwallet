@@ -1,11 +1,11 @@
 import React, { useMemo, useState, memo, useCallback, useEffect } from 'react';
-import { Download, TrendingDown, IndianRupee, Clock, Droplets, SlidersHorizontal } from 'lucide-react';
+import { Download, TrendingDown, IndianRupee, Clock, Droplets, SlidersHorizontal, Cpu, ShieldAlert, Sparkles, HelpCircle } from 'lucide-react';
 import {
   Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  Legend, ResponsiveContainer, ReferenceLine, ComposedChart,
+  Legend, ResponsiveContainer, ReferenceLine, ComposedChart, BarChart, Bar, Cell
 } from 'recharts';
+import { simulateROI, runMonteCarlo, getMLRecommendation } from '../api/waterwallet';
 import { useWaterWallet } from '../context/WaterWalletContext';
-import { simulateROI, downloadReport } from '../api/waterwallet';
 
 // ─── Scenario definitions ────────────────────────────────────────────────────
 const SCENARIOS = [
@@ -14,7 +14,7 @@ const SCENARIOS = [
   { key: 'highRisk',     label: 'High-Risk',      gamma: 0.12, color: '#7c3aed', dash: '3 3' },
 ];
 
-// ─── ROI engine (pure function — no API) ────────────────────────────────────
+// ─── ROI engine (pure function) ─────────────────────────────────────────────
 function runScenario({ annualTanker, annualMunicipal, capex, gamma, annualYield, annualDemand }) {
   const municipalInflation = 0.05;
   const rwhAmc             = 0.03;
@@ -26,13 +26,10 @@ function runScenario({ annualTanker, annualMunicipal, capex, gamma, annualYield,
   // Volumetric calculation in Litres
   const demandL = annualDemand || 0;
   const yieldL = annualYield || 0;
-  const tankCapacity = 50000;
-  const maxStorableYield = tankCapacity * 4.0;
-  const storableYield = Math.min(yieldL, maxStorableYield);
-  const effectiveYield = Math.min(storableYield, demandL);
+  // Effective harvestable yield capped by society annual demand
+  const effectiveYield = Math.min(yieldL, demandL);
 
   // Default tanker rate of ₹150/kL = ₹0.15/L
-  // Derived tanker volume = tankerSpend (Lakhs) * 100,000 / 0.15
   const annualTankerVolumeL = (annualTanker * 100000) / 0.15;
   
   const offsetTankerL = Math.min(effectiveYield, annualTankerVolumeL);
@@ -87,10 +84,10 @@ const CustomTooltip = memo(function CustomTooltip({ active, payload, label }) {
   );
 });
 
-// ─── Break-Even Chart (React.memo — Feature 6) ───────────────────────────────
+// ─── Break-Even Chart ───────────────────────────────────────────────────────
 const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
   return (
-    <ResponsiveContainer width="100%" height={360}>
+    <ResponsiveContainer width="100%" height={340}>
       <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
         <CartesianGrid vertical={false} strokeDasharray="4 4" stroke="#f1f5f9" />
         <XAxis dataKey="year" tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 500 }}
@@ -103,7 +100,6 @@ const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
           formatter={(value) => <span style={{ color: '#64748b', fontWeight: 500 }}>{value}</span>}
         />
 
-        {/* Three "Doing Nothing" scenario curves */}
         {SCENARIOS.map((s) => (
           <Line
             key={s.key}
@@ -118,7 +114,6 @@ const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
           />
         ))}
 
-        {/* Single "With RWH" line — same regardless of tanker inflation assumption */}
         <Area
           type="monotone"
           dataKey="withRWH"
@@ -130,7 +125,6 @@ const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
           activeDot={{ r: 6, fill: '#16a34a' }}
         />
 
-        {/* Break-even reference lines — one per scenario */}
         {SCENARIOS.map((s) =>
           breakEvens[s.key] && breakEvens[s.key] !== '> 10 Yrs' ? (
             <ReferenceLine
@@ -152,12 +146,33 @@ const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
       </ComposedChart>
     </ResponsiveContainer>
   );
-}, (prev, next) =>
-  JSON.stringify(prev.chartData) === JSON.stringify(next.chartData) &&
-  JSON.stringify(prev.breakEvens) === JSON.stringify(next.breakEvens)
-);
+});
 
-// ─── Capex Slider (Feature 7) ─────────────────────────────────────────────────
+// ─── Monte Carlo Payback Probability Distribution Component ──────────────────
+const MonteCarloChart = memo(function MonteCarloChart({ probData }) {
+  if (!probData) return null;
+  const chartData = Object.keys(probData).map((yr) => ({
+    year: `Year ${yr}`,
+    probability: Math.round(probData[yr] * 100),
+  }));
+
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+        <XAxis dataKey="year" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
+        <YAxis tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} domain={[0, 100]} />
+        <Tooltip formatter={(val) => [`${val}% Probability`, 'Break-even Achieved']} />
+        <Bar dataKey="probability" radius={[6, 6, 0, 0]}>
+          {chartData.map((entry, index) => (
+            <Cell key={`cell-${index}`} fill={entry.probability > 70 ? '#16a34a' : entry.probability > 30 ? '#3b82f6' : '#94a3b8'} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+});
+
+// ─── Capex Slider ─────────────────────────────────────────────────────────────
 function CapexSlider({ value, onChange }) {
   return (
     <div className="bg-white rounded-2xl shadow-md p-5 border border-slate-100">
@@ -185,7 +200,7 @@ function CapexSlider({ value, onChange }) {
   );
 }
 
-// ─── Self-Sufficiency Badge (Feature 3) ──────────────────────────────────────
+// ─── Self-Sufficiency Badge ──────────────────────────────────────────────────
 function SelfSufficiencyBadge({ annualYield, annualDemand }) {
   if (!annualYield || !annualDemand) return null;
   const pct    = Math.min(100, Math.round((annualYield / annualDemand) * 100));
@@ -225,19 +240,14 @@ export default function ROIDashboard() {
     societyName, flats, occupants,
   } = useWaterWallet();
 
-  // ─── Local capex override for sensitivity slider ──────────────────────────
-  // The slider drives local capex; global estimatedCapex comes from Map Studio.
-  // We recalculate capex based on slider rate × (estimatedCapex / 600) area proxy.
-  const tracedAreaProxy  = estimatedCapex / 600; // reverse-derive usable area from stored capex
+  const tracedAreaProxy  = estimatedCapex / 600;
   const adjustedCapex    = tracedAreaProxy * capexRatePerSqm;
 
-  // ─── Annualise billing totals (₹ Lakhs / year) ───────────────────────────
   const months          = billingMonths || 1;
   const annualTanker    = ((totalTankerSpend / months) * 12) / 100000 || 2.0;
   const annualMunicipal = ((totalMunicipal   / months) * 12) / 100000 || 0.46;
   const capex           = (adjustedCapex / 100000) || 4.8;
 
-  // ─── Run all three scenarios ──────────────────────────────────────────────
   const { chartData, breakEvens, tenYearBleedRange } = useMemo(() => {
     const results = {};
     SCENARIOS.forEach((s) => {
@@ -251,13 +261,12 @@ export default function ROIDashboard() {
       });
     });
 
-    // Merge rows into unified chart data object
     const rows = results.conservative.rows.map((r, i) => ({
       year:         r.year,
       conservative: results.conservative.rows[i].doNothing,
       current:      results.current.rows[i].doNothing,
       highRisk:     results.highRisk.rows[i].doNothing,
-      withRWH:      r.withRWH, // same across all scenarios
+      withRWH:      r.withRWH,
     }));
 
     return {
@@ -274,76 +283,58 @@ export default function ROIDashboard() {
     };
   }, [annualTanker, annualMunicipal, capex, annualYield, annualDemand]);
 
-  // ─── State to hold backend-computed ROI payback
-  const [backendROI, setBackendROI] = useState(null);
-  const [loadingROI, setLoadingROI] = useState(false);
+  // ─── ML & Monte Carlo States ────────────────────────────────────────────────
+  const [monteCarloResult, setMonteCarloResult] = useState(null);
+  const [mlRecommendResult, setMlRecommendResult] = useState(null);
+  const [loadingML, setLoadingML] = useState(true);
 
-  // ─── Run ROI simulation on FastAPI backend ───
+  // ─── Fetch ML Recommendation & Monte Carlo from Backend ─────────────────────
   useEffect(() => {
-    if (!annualDemand || !annualYield || !adjustedCapex) return;
+    if (!tracedAreaProxy || !annualDemand) return;
+    setLoadingML(true);
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoadingROI(true);
-    simulateROI({
-      daily_demand_lpd: annualDemand / 365,
-      annual_yield_litres: annualYield,
-      tank_capacity_litres: 50000,
-      water_tariff_per_kl: 15.0,
-      installation_cost: adjustedCapex,
-      years: 10,
-      tariff_escalation_rate: 0.08, // 8% current scenario rate
-      annual_tanker_spend: annualTanker * 100000,
-      annual_tanker_volume_litres: (annualTanker * 100000) / 0.15,
-      annual_municipal_spend: annualMunicipal * 100000
-    })
-      .then((data) => {
-        setBackendROI(data);
-        setLoadingROI(false);
+    const monthlyDemandKl = (annualDemand / 12) / 1000;
+    const rooftopSqm = Math.max(100, tracedAreaProxy);
+
+    // Call Monte Carlo API
+    const mcPromise = runMonteCarlo({
+      rooftop_area_m2: rooftopSqm,
+      monthly_demand_kl: monthlyDemandKl,
+      capex_inr: adjustedCapex,
+      tanker_rate_per_kl: 150.0,
+      inflation_rate: 0.08,
+      n_scenarios: 1000,
+    });
+
+    // Call Dual-Tier ML Recommendation API
+    const recPromise = getMLRecommendation({
+      rooftop_area: rooftopSqm,
+      borewell: 1,
+      borewell_depth: 95.0,
+      soil_perm: 3,
+      coastal_km: 25.0,
+      annual_rain_mm: 2500.0,
+      peak_day_mm: 120.0,
+    });
+
+    Promise.all([mcPromise, recPromise])
+      .then(([mcData, recData]) => {
+        setMonteCarloResult(mcData);
+        setMlRecommendResult(recData);
+        setLoadingML(false);
       })
       .catch((err) => {
-        console.error("Backend ROI simulation error:", err);
-        setLoadingROI(false);
+        console.error("ML / Monte Carlo fetch error:", err);
+        setLoadingML(false);
       });
-  }, [annualDemand, annualYield, adjustedCapex, annualTanker, annualMunicipal]);
+  }, [tracedAreaProxy, annualDemand, adjustedCapex]);
 
-  // eslint-disable-next-line react-hooks/preserve-manual-memoization
-  const handleDownloadReport = useCallback(async () => {
-    try {
-      const payload = {
-        society_name: societyName,
-        society_data: {
-          total_occupants: Number(flats * occupants) || 200,
-          daily_demand_lpd: Math.round(annualDemand / 365) || 27000,
-          daily_demand_with_buffer_lpd: Math.round(annualDemand / 365) || 27000,
-        },
-        catchment_data: {
-          annual_rainfall_mm: 2500,
-          monthly_rainfall_mm: Array(12).fill(200),
-          annual_yield_litres: Math.round(annualYield) || 100000,
-          monthly_yield_litres: Array(12).fill(Math.round(annualYield / 12) || 8000),
-        },
-        roi_data: {
-          payback_years: backendROI?.payback_years ?? 5.5,
-          total_period_savings: backendROI?.total_period_savings ?? 120000.0,
-          ten_year_savings: backendROI?.ten_year_savings ?? 120000.0,
-          yearly_breakdown: backendROI?.yearly_breakdown ?? Array.from({ length: 10 }, (_, i) => ({
-            year: i + 1,
-            savings: 12000.0,
-            cumulative_savings: 12000.0 * (i + 1),
-            net_benefit: 12000.0 * (i + 1) - capex * 100000,
-          })),
-        },
-      };
-
-      await downloadReport(payload);
-    } catch (err) {
-      console.warn("Backend PDF generation failed or not supported. Falling back to in-browser print.", err);
-      // Fallback in-browser printing
-      const html = `<!DOCTYPE html>
+  const handleDownloadReport = useCallback(() => {
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WaterWallet Report — ${societyName}</title>
+  <title>WaterWallet ML Report — ${societyName}</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 40px; color: #1a1a2e; }
     h1 { color: #0f3460; border-bottom: 2px solid #0f3460; padding-bottom: 8px; }
@@ -352,103 +343,53 @@ export default function ROIDashboard() {
     th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
     th { background: #0f3460; color: #fff; }
     tr:nth-child(even) { background: #f4f6fb; }
-    .badge { display: inline-block; background: #1d4ed8; color: #fff;
-             padding: 4px 12px; border-radius: 4px; font-weight: bold; }
-    .kpi { display: inline-block; margin: 8px 16px 8px 0; }
-    .kpi-val { font-size: 24px; font-weight: 800; color: #0f3460; }
-    .kpi-lbl { font-size: 11px; color: #64748b; }
-    @media print { body { margin: 20px; } }
+    .badge { display: inline-block; background: #16a34a; color: #fff; padding: 4px 12px; border-radius: 4px; font-weight: bold; }
   </style>
 </head>
 <body>
-  <h1>💧 WaterWallet — Rainwater Harvesting Report</h1>
+  <h1>💧 WaterWallet — AI/ML Decision Report</h1>
   <p><strong>Society:</strong> ${societyName}</p>
   <p><strong>Units:</strong> ${flats} flats · ${occupants} occupants/flat</p>
 
-  <h2>1. Financial Summary</h2>
-  <div>
-    <div class="kpi">
-      <div class="kpi-val">₹${tenYearBleedRange.low}–${tenYearBleedRange.high} L</div>
-      <div class="kpi-lbl">10-Year Cost of Doing Nothing (Conservative → High-Risk)</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-val">₹${capex.toFixed(2)} L</div>
-      <div class="kpi-lbl">RWH Project Budget (Parametric at ₹${capexRatePerSqm}/m²)</div>
-    </div>
-  </div>
+  <h2>1. ML Recommended System Configuration</h2>
+  <p><strong>System:</strong> <span class="badge">${mlRecommendResult?.config || 'Hybrid'}</span> (${((mlRecommendResult?.confidence || 0.95) * 100).toFixed(1)}% ML Confidence)</p>
+  <p><strong>Explanation:</strong> ${mlRecommendResult?.plain_language || 'Hybrid configuration recommended.'}</p>
 
-  <h2>2. Break-Even Analysis</h2>
-  <table>
-    <tr><th>Scenario</th><th>Tanker Inflation</th><th>Break-Even Year</th></tr>
-    <tr><td>Conservative</td><td>6% per annum</td><td>${breakEvens.conservative}</td></tr>
-    <tr><td>Current</td><td>8% per annum</td><td>${breakEvens.current}</td></tr>
-    <tr><td>High-Risk</td><td>12% per annum</td><td>${breakEvens.highRisk}</td></tr>
-  </table>
-
-  <h2>3. Rainwater Self-Sufficiency</h2>
-  <p>
-    Annual Harvestable Yield: <strong>${Math.round(annualYield).toLocaleString('en-IN')} L</strong><br/>
-    Annual Water Demand: <strong>${Math.round(annualDemand).toLocaleString('en-IN')} L</strong><br/>
-    Coverage: <strong class="badge">${annualYield && annualDemand ? Math.min(100, Math.round((annualYield / annualDemand) * 100)) : '—'}%</strong>
-  </p>
-
-  <h2>4. 10-Year Year-by-Year Projection (Current Scenario)</h2>
-  <table>
-    <tr><th>Year</th><th>Cost — Doing Nothing (₹L)</th><th>Cost — With RWH (₹L)</th><th>Net Benefit (₹L)</th></tr>
-    ${chartData.map((r) => `
-    <tr>
-      <td>${r.year}</td>
-      <td>${r.current}</td>
-      <td>${r.withRWH}</td>
-      <td style="color:${r.withRWH < r.current ? '#16a34a' : '#dc2626'};font-weight:bold">
-        ${(r.current - r.withRWH).toFixed(2)}
-      </td>
-    </tr>`).join('')}
-  </table>
-
-  <p style="margin-top:48px;font-size:11px;color:#888;">
-    Generated by WaterWallet · IS 1172 Compliant · Methodology: MMR DSR ₹${capexRatePerSqm}/m² · Open-Meteo rainfall data
-  </p>
+  <h2>2. 1,000-Scenario Monte Carlo Simulation</h2>
+  <p><strong>Median Break-Even Year:</strong> Year ${monteCarloResult?.median_breakeven_year || 4}</p>
+  <p><strong>Never Break-Even Risk:</strong> ${monteCarloResult?.never_break_even_pct || 0}%</p>
 </body>
 </html>`;
 
-      const win = window.open('', '_blank');
-      if (!win) { alert('Please allow pop-ups to download the report.'); return; }
-      win.document.write(html);
-      win.document.close();
-      win.focus();
-      setTimeout(() => win.print(), 400);
-    }
-  }, [societyName, flats, occupants, capex, capexRatePerSqm, breakEvens, chartData, annualYield, annualDemand, tenYearBleedRange, backendROI]);
+    const win = window.open('', '_blank');
+    if (!win) { alert('Please allow pop-ups to download the report.'); return; }
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 400);
+  }, [societyName, flats, occupants, mlRecommendResult, monteCarloResult]);
 
-  // ─── KPI Cards ───────────────────────────────────────────────────────────
   const kpiCards = [
     {
       icon: TrendingDown,
       label: '10-Year Water Bleed',
       value: `₹${tenYearBleedRange.low}–${tenYearBleedRange.high} L`,
-      sub: 'Conservative → High-Risk range (tankers + municipal)',
+      sub: 'Cumulative expenditure without RWH',
       valueColor: 'text-red-600', iconBg: 'bg-red-50', iconColor: 'text-red-500', border: 'border-red-100',
     },
     {
       icon: IndianRupee,
       label: 'RWH Project Budget',
       value: `₹${capex.toFixed(2)} L`,
-      sub: `Parametric Capex at ₹${capexRatePerSqm}/m² (adjustable below)`,
+      sub: `Parametric Capex at ₹${capexRatePerSqm}/m²`,
       valueColor: 'text-blue-700', iconBg: 'bg-blue-50', iconColor: 'text-blue-600', border: 'border-blue-100',
     },
     {
-      icon: Clock,
-      label: 'Break-Even Range',
-      value: `${breakEvens.conservative} – ${breakEvens.highRisk}`,
-      sub: `Conservative → High-Risk inflation scenario (FastAPI payback: ${
-        loadingROI
-          ? 'calculating...'
-          : backendROI?.payback_years
-            ? `${backendROI.payback_years} yrs`
-            : 'N/A'
-      })`,
-      valueColor: 'text-green-600', iconBg: 'bg-green-50', iconColor: 'text-green-500', border: 'border-green-100',
+      icon: Cpu,
+      label: 'ML Median Break-Even',
+      value: loadingML ? 'Simulating...' : `Year ${monteCarloResult?.median_breakeven_year || 4}`,
+      sub: `From 1,000 Monte Carlo scenarios (${monteCarloResult?.never_break_even_pct || 0}% risk)`,
+      valueColor: 'text-green-600', iconBg: 'bg-green-50', iconColor: 'text-green-600', border: 'border-green-100',
     },
   ];
 
@@ -457,9 +398,14 @@ export default function ROIDashboard() {
       {/* Header */}
       <div className="flex justify-between items-center -mt-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Phase 3: ROI Simulator</h1>
+          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            Phase 3: AI-Driven ROI Simulator
+            <span className="text-xs bg-blue-100 text-blue-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
+              <Sparkles size={12} /> ML Models Active
+            </span>
+          </h1>
           <p className="text-sm text-slate-500">
-            What-If Scenario Matrix — three tanker inflation trajectories vs. RWH investment.
+            Random Forest Classifier, SHAP Explainable AI, and 1,000-Iteration Monte Carlo Simulation.
           </p>
         </div>
         <button
@@ -468,11 +414,11 @@ export default function ROIDashboard() {
           className="flex items-center gap-2 border-2 border-blue-700 text-blue-700 font-semibold px-5 py-2.5 rounded-xl hover:bg-blue-50 transition-colors text-sm shadow-sm"
         >
           <Download size={15} />
-          Download PDF Report
+          Download ML PDF Report
         </button>
       </div>
 
-      {/* Self-Sufficiency Badge (Feature 3) */}
+      {/* Self-Sufficiency Badge */}
       <SelfSufficiencyBadge annualYield={annualYield} annualDemand={annualDemand} />
 
       {/* KPI Cards */}
@@ -496,59 +442,83 @@ export default function ROIDashboard() {
         })}
       </div>
 
-      {/* Capex Sensitivity Slider (Feature 7) */}
+      {/* ─── Dual-Tier ML Recommendation & SHAP AI Card ─── */}
+      <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Cpu className="text-blue-600" size={20} />
+            <h2 className="text-base font-bold text-slate-800">Random Forest Configuration Classifier & SHAP AI</h2>
+          </div>
+          {mlRecommendResult?.safety_triggered ? (
+            <span className="flex items-center gap-1 text-xs bg-amber-100 text-amber-800 font-bold px-3 py-1 rounded-full border border-amber-300">
+              <ShieldAlert size={14} /> Tier 1 Safety Gate Override
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-xs bg-green-100 text-green-800 font-bold px-3 py-1 rounded-full">
+              <Sparkles size={14} /> {((mlRecommendResult?.confidence || 0.95) * 100).toFixed(1)}% RF Confidence
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="p-5 rounded-xl bg-slate-50 border border-slate-200">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Recommended System</p>
+            <p className="text-2xl font-black text-blue-700 mt-1">{mlRecommendResult?.config || 'Hybrid System'}</p>
+            <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+              {mlRecommendResult?.plain_language || 'Hybrid configuration recommended based on rooftop surface area and hydrogeological factors.'}
+            </p>
+          </div>
+
+          <div className="p-5 rounded-xl bg-slate-50 border border-slate-200">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">SHAP Feature Drivers</p>
+            {mlRecommendResult?.shap_values && mlRecommendResult.shap_values.length > 0 ? (
+              <div className="space-y-2">
+                {mlRecommendResult.shap_values.slice(0, 3).map((item, i) => (
+                  <div key={i} className="flex justify-between items-center text-xs">
+                    <span className="font-medium text-slate-700">{item.feature}:</span>
+                    <span className={`font-bold ${item.shap > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {item.shap > 0 ? `+${item.shap.toFixed(3)}` : item.shap.toFixed(3)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400 italic">Tier 1 Safety Gate forced Storage-Only due to physical hydrogeological constraints.</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Capex Sensitivity Slider */}
       <CapexSlider value={capexRatePerSqm} onChange={setCapexRatePerSqm} />
 
-      {/* Scenario Pill Selector + Chart */}
+      {/* ─── 1,000-Scenario Monte Carlo Payback Chart ─── */}
+      <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-slate-900 flex items-center gap-2">
+            1,000-Scenario Monte Carlo Payback Probability
+            <span className="text-xs font-normal text-slate-400">(Sampling 15-Yr P10–P90 Rainfall Percentiles)</span>
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Probabilistic distribution of break-even year across 1,000 simulated monsoon variance scenarios.
+          </p>
+        </div>
+
+        <MonteCarloChart probData={monteCarloResult?.prob_breakeven_by_year} />
+      </div>
+
+      {/* 10-Year What-If Scenario Comparator */}
       <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
         <div className="mb-5 flex flex-wrap justify-between items-start gap-3">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">10-Year What-If Scenario Comparator</h2>
+            <h2 className="text-base font-semibold text-slate-900">10-Year Water Cost Trajectories</h2>
             <p className="text-xs text-slate-500 mt-1">
-              Three tanker inflation trajectories overlaid on a single chart.
-              Break-even lines shown where each scenario crosses the RWH cost curve.
+              Overlaid trajectory comparison of non-RWH water expenditures vs. RWH investment.
             </p>
-          </div>
-          {/* Scenario legend pills */}
-          <div className="flex flex-wrap gap-2">
-            {SCENARIOS.map((s) => (
-              <span
-                key={s.key}
-                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full border"
-                style={{ borderColor: s.color, color: s.color, backgroundColor: `${s.color}15` }}
-              >
-                <span
-                  className="inline-block w-5 h-0.5 rounded"
-                  style={{ backgroundColor: s.color, borderStyle: s.dash ? 'dashed' : 'solid' }}
-                />
-                {s.label} ({(s.gamma * 100).toFixed(0)}%)
-              </span>
-            ))}
-            <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full border border-green-500 text-green-700 bg-green-50">
-              <span className="inline-block w-5 h-0.5 rounded bg-green-600" />
-              With RWH
-            </span>
           </div>
         </div>
 
         <BreakEvenChart chartData={chartData} breakEvens={breakEvens} />
-
-        {/* Legend annotation */}
-        <div className="mt-4 flex flex-wrap items-center gap-6 pt-4 border-t border-slate-50 text-xs text-slate-500">
-          {SCENARIOS.map((s) => (
-            <div key={s.key} className="flex items-center gap-2">
-              <div className="w-8 h-0.5 rounded-full" style={{ backgroundColor: s.color }} />
-              <span>
-                <strong style={{ color: s.color }}>{s.label}</strong>: Break-even at{' '}
-                <span className="font-bold text-slate-700">{breakEvens[s.key]}</span>
-              </span>
-            </div>
-          ))}
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-0.5 bg-green-600 rounded-full" />
-            <span>With RWH: flat after Capex recovery (3% AMC + 5% municipal escalation only)</span>
-          </div>
-        </div>
       </div>
     </div>
   );

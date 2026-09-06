@@ -40,7 +40,8 @@ export function WaterWalletProvider({ children }) {
   // One-time parametric capex in ₹
   const [estimatedCapex,  setEstimatedCapex]  = useState(1200 * 0.80 * 450);
   // Annual harvestable yield in litres (Turf area × rainfall × runoff)
-  const [annualYield,     setAnnualYield]     = useState(0);
+  // Seeded default: ~1.5M Litres (based on standard reference society)
+  const [annualYield,     setAnnualYield]     = useState(1500000);
   // Annual water demand in litres — synced from VirtualMeter for Phase 3 badge.
   // Seed = same defaults as the VirtualMeter initial state (50 flats, 4 occ,
   // UFW on) computed through the canonical demand function so
