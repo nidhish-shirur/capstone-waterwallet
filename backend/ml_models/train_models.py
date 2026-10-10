@@ -9,7 +9,7 @@ Usage:
 
 What this script does:
   1. Fetches 15 years of real daily rainfall from Open-Meteo
-     for Thane (lat 19.22, lon 72.97), 2010–2025.
+     for Thane (lat 19.22, lon 72.97), 2010–2024.
   2. Aggregates to monthly data.
   3. Trains 3 models and saves them:
      a. RF Yield Regressor  → waterwallet_yield_model.pkl
@@ -32,11 +32,20 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 import joblib
+import sklearn
 
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import mean_absolute_error, r2_score, accuracy_score
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    mean_absolute_error,
+    r2_score,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -47,6 +56,7 @@ OUT_DIR  = HERE  # save pkl files alongside this script
 CLASSIFIER_PKL = os.path.join(OUT_DIR, "waterwallet_config_classifier.pkl")
 YIELD_PKL      = os.path.join(OUT_DIR, "waterwallet_yield_model.pkl")
 LABEL_ENC_PKL  = os.path.join(OUT_DIR, "waterwallet_label_encoder.pkl")
+METADATA_JSON  = os.path.join(OUT_DIR, "model_metadata.json")
 PERCENTILE_CSV = os.path.join(OUT_DIR, "thane_rain_percentiles.csv")
 
 # ---------------------------------------------------------------------------
@@ -64,6 +74,7 @@ MONTHLY_DEMAND_KL = 43.0    # ~1433 residents × 135 LPCD × 30 / 1000
 
 N_SYNTHETIC   = 600
 RANDOM_STATE  = 42
+TRAINING_METRICS = {}
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +157,7 @@ def calculate_yield_kl(rainfall_mm, area=ROOFTOP_AREA_M2):
 def train_yield_model(monthly: pd.DataFrame) -> tuple:
     """
     1,080-sample dataset: 10 rooftop sizes × 180 months (full monthly series).
-    Features: rooftop_area, month, rain_mm, annual_rain_mm, peak_day,
+    Features: rooftop_area, month, rain_mm, annual_rain_mm, peak_day_proxy,
               lag1_rain, lag2_rain, lag3_rain, sin_month, cos_month.
     Target: yield_kl (physics formula — RF learns the physics relationship).
     Train: 2010–2021 (144 months). Test: 2022–2024 (36 months).
@@ -170,6 +181,9 @@ def train_yield_model(monthly: pd.DataFrame) -> tuple:
         m["sin_month"] = np.sin(2 * np.pi * m["month"] / 12)
         m["cos_month"] = np.cos(2 * np.pi * m["month"] / 12)
         m["rooftop_area"] = float(area)
+        # The API receives monthly totals, not daily observations. Keep this
+        # feature available at inference by using the same monthly proxy.
+        m["peak_day_proxy"] = m["rain_mm"] / 30.0
         m["yield_kl"] = calculate_yield_kl(m["rain_mm"], area)
         rows.append(m)
 
@@ -177,7 +191,7 @@ def train_yield_model(monthly: pd.DataFrame) -> tuple:
 
     FEATURES = [
         "rooftop_area", "month", "rain_mm", "annual_rain_mm",
-        "peak_day", "lag1_rain", "lag2_rain", "lag3_rain",
+        "peak_day_proxy", "lag1_rain", "lag2_rain", "lag3_rain",
         "sin_month", "cos_month",
     ]
 
@@ -198,6 +212,10 @@ def train_yield_model(monthly: pd.DataFrame) -> tuple:
     mae   = mean_absolute_error(y_test, preds)
     r2    = r2_score(y_test, preds)
     print(f"  RF Yield Regressor — MAE: {mae:.2f} KL  R²: {r2:.4f}")
+    TRAINING_METRICS["yield"] = {
+        "mae_kl": round(float(mae), 4),
+        "r2": round(float(r2), 4),
+    }
 
     joblib.dump(rf, YIELD_PKL)
     print(f"  Saved: {YIELD_PKL}")
@@ -212,21 +230,17 @@ def classify_rwh(row) -> str:
     Engineering labeling function (BMC RWH Guidelines 2007, revised 2019).
     Maps site features to one of: Storage-Only, Borewell-Recharge, Hybrid.
     """
-    coastal    = row["coastal_km"] < 3
+    coastal    = row["coastal_km"] <= 2.5
     has_bw     = row["borewell"] == 1
-    deep_bw    = row["borewell_depth"] > 80
-    good_soil  = row["soil_perm"] >= 3
-    large_roof = row["rooftop_area"] > 600
+    deep_bw    = row["borewell_depth"] >= 30.0
+    good_soil  = row["soil_perm"] >= 2
+    large_roof = row["rooftop_area"] >= 500.0
 
-    if coastal:
+    if coastal or not has_bw or not deep_bw or not good_soil:
         return "Storage-Only"
-    if has_bw and good_soil and large_roof:
+    if large_roof:
         return "Hybrid"
-    if has_bw and deep_bw and good_soil:
-        return "Borewell-Recharge"
-    if has_bw and large_roof:
-        return "Hybrid"
-    return "Storage-Only"
+    return "Borewell-Recharge"
 
 
 def train_classifier(monthly: pd.DataFrame) -> tuple:
@@ -274,13 +288,20 @@ def train_classifier(monthly: pd.DataFrame) -> tuple:
         X_clf, y_enc, test_size=0.2, random_state=RANDOM_STATE, stratify=y_enc
     )
 
-    rf_clf = RandomForestClassifier(
+    base_clf = RandomForestClassifier(
         n_estimators=200, random_state=RANDOM_STATE, n_jobs=-1
     )
+    rf_clf = CalibratedClassifierCV(base_clf, method="sigmoid", cv=5)
     rf_clf.fit(X_train, y_train)
 
-    acc = accuracy_score(y_test, rf_clf.predict(X_test))
-    print(f"  RF Classifier — Test Accuracy: {acc:.4f}")
+    predictions = rf_clf.predict(X_test)
+    acc = accuracy_score(y_test, predictions)
+    balanced_acc = balanced_accuracy_score(y_test, predictions)
+    macro_f1 = f1_score(y_test, predictions, average="macro")
+    matrix = confusion_matrix(y_test, predictions).tolist()
+    print(f"  RF Classifier — Accuracy: {acc:.4f}")
+    print(f"  Balanced accuracy: {balanced_acc:.4f}  Macro F1: {macro_f1:.4f}")
+    print(f"  Confusion matrix: {matrix}")
     print(f"  Classes: {list(le.classes_)}")
 
     # Real case validation
@@ -300,6 +321,38 @@ def train_classifier(monthly: pd.DataFrame) -> tuple:
     joblib.dump(le, LABEL_ENC_PKL)
     print(f"\n  Saved: {CLASSIFIER_PKL}")
     print(f"  Saved: {LABEL_ENC_PKL}")
+
+    metadata = {
+        "training_version": 1,
+        "trained_at_utc": pd.Timestamp.utcnow().isoformat(),
+        "sklearn_version": sklearn.__version__,
+        "random_state": RANDOM_STATE,
+        "classifier": {
+            "type": "CalibratedClassifierCV(RandomForestClassifier)",
+            "features": CLF_FEATURES,
+            "samples": int(len(site_df)),
+            "metrics": {
+                "accuracy": round(float(acc), 4),
+                "balanced_accuracy": round(float(balanced_acc), 4),
+                "macro_f1": round(float(macro_f1), 4),
+                "confusion_matrix": matrix,
+            },
+        },
+        "yield_regressor": {
+            "type": "RandomForestRegressor",
+            "features": [
+                "rooftop_area", "month", "rain_mm", "annual_rain_mm",
+                "peak_day_proxy", "lag1_rain", "lag2_rain", "lag3_rain",
+                "sin_month", "cos_month",
+            ],
+            "training_years": "2010-2021",
+            "test_years": "2022-2024",
+            "metrics": TRAINING_METRICS.get("yield", {}),
+        },
+    }
+    with open(METADATA_JSON, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"  Saved: {METADATA_JSON}")
 
     return rf_clf, le, acc
 

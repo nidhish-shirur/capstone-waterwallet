@@ -9,6 +9,39 @@ const api = axios.create({
   timeout: 30_000,
 });
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("access_token");
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem("access_token");
+      // Could dispatch an event or redirect here, but we'll let the context handle it
+      window.dispatchEvent(new Event("auth:unauthorized"));
+    }
+    return Promise.reject(error);
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+export const login = (email, password) =>
+  api.post("/api/auth/login", { email, password }).then((r) => r.data);
+
+export const register = (email, password) =>
+  api.post("/api/auth/register", { email, password }).then((r) => r.data);
+
+export const fetchCurrentUser = () =>
+  api.get("/api/auth/me").then((r) => r.data);
+
 // ---------------------------------------------------------------------------
 // Society — demand calculation (IS 1172)
 // ---------------------------------------------------------------------------
@@ -31,6 +64,16 @@ export const fetchSocietyBaseline = (payload) =>
 export const fetchCatchmentData = (payload) =>
   api.post("/api/catchment/calculate", payload).then((r) => r.data);
 
+export const fetchRainfallForecast = (payload) =>
+  api.post("/api/catchment/forecast", payload).then((r) => r.data);
+
+/**
+ * @param {{ rooftop_area_m2: number, monthly_rainfall_mm: Array }} payload
+ * @returns {Promise<{ monthly_yield_kl: Array, annual_yield_kl: number, source: string }>}
+ */
+export const getMLYield = (payload) =>
+  api.post("/api/ml/yield", payload).then((r) => r.data);
+
 // ---------------------------------------------------------------------------
 // ROI — multi-year simulation & ML Monte Carlo
 // ---------------------------------------------------------------------------
@@ -44,11 +87,18 @@ export const simulateROI = (payload) =>
 
 /**
  * Runs 1,000-scenario Monte Carlo ROI simulation.
- * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, tanker_rate_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
- * @returns {Promise<{ median_breakeven_year: number, prob_breakeven_by_year: object, percentiles: object, n_scenarios: number, never_break_even_pct: number, scenarios_used: string }>}
+ * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, tank_capacity_litres?: number, rainfall_reduction_percent?: number, tanker_rate_per_kl?: number, annual_tanker_volume_litres?: number, water_tariff_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
+ * @returns {Promise<{ median_breakeven_year: number, prob_breakeven_by_year: object, percentiles: object, n_scenarios: number, never_break_even_pct: number, scenarios_used: string, is_site_specific: boolean }>}
  */
 export const runMonteCarlo = (payload) =>
   api.post("/api/roi/monte-carlo", payload).then((r) => r.data);
+
+/**
+ * Runs the daily historical tank water-balance simulator.
+ * Overflow is environmental/recharge or design-loss accounting, never savings.
+ */
+export const sizeTank = (payload) =>
+  api.post("/api/roi/tank-sizer", payload).then((r) => r.data);
 
 // ---------------------------------------------------------------------------
 // ML — Dual-tier recommendation & SHAP explanations
@@ -61,6 +111,14 @@ export const runMonteCarlo = (payload) =>
  */
 export const getMLRecommendation = (payload) =>
   api.post("/api/ml/recommend", payload).then((r) => r.data);
+
+/**
+ * Generates a plain-language advisory from validated dashboard metrics.
+ * @param {object} payload
+ * @returns {Promise<{summary: string, recommendations: string[], risks: string[], assumptions: string[]}>}
+ */
+export const getWaterAdvisory = (payload) =>
+  api.post("/api/advisory/water", payload).then((r) => r.data);
 
 // Database CRUD Operations
 // ---------------------------------------------------------------------------
@@ -80,6 +138,24 @@ export const createSociety = (payload) =>
  */
 export const getSociety = (id) =>
   api.get(`/api/societies/${id}`).then((r) => r.data);
+
+/**
+ * Gets a persisted society and its historical billing entries from PostgreSQL.
+ * This is a temporary read-only path while the normal CRUD routes use the
+ * in-memory store.
+ * @param {number} id
+ * @returns {Promise<object>}
+ */
+export const getSocietyFromDatabase = (id) =>
+  api.get(`/api/societies/${id}/database`).then((r) => r.data);
+
+/**
+ * Gets only historical billing entries persisted for a society.
+ * @param {number} id
+ * @returns {Promise<Array>}
+ */
+export const fetchHistoricalBilling = (id) =>
+  api.get(`/api/societies/${id}/billing`).then((r) => r.data);
 
 /**
  * Updates an existing society.
@@ -107,5 +183,19 @@ export const saveBillingEntries = (id, payload) =>
  */
 export const saveSocietyAnalysis = (id, payload) =>
   api.post(`/api/societies/${id}/analyses`, payload).then((r) => r.data);
+
+/**
+ * Gets all societies for the current user.
+ * @returns {Promise<Array>}
+ */
+export const fetchSocieties = () =>
+  api.get("/api/societies/").then((r) => r.data);
+
+/**
+ * Gets societies persisted in PostgreSQL for the temporary Phase 1 loader.
+ * @returns {Promise<Array>}
+ */
+export const fetchDatabaseSocieties = () =>
+  api.get("/api/societies/database").then((r) => r.data);
 
 export default api;

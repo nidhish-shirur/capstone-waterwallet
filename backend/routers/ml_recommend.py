@@ -50,6 +50,8 @@ def ml_recommend(payload: MLRecommendRequest) -> MLRecommendResponse:
             safety_reason     = safety_result["reason"],
             shap_values       = [],
             plain_language    = safety_result["reason"],
+            shap_available   = False,
+            explanation_warning = "SHAP is not used when the safety gate forces the recommendation.",
         )
 
     # ── Tier 2: RF Classifier + SHAP ─────────────────────────────────────────
@@ -77,4 +79,6 @@ def ml_recommend(payload: MLRecommendRequest) -> MLRecommendResponse:
         safety_reason    = result["safety_reason"],
         shap_values      = [SHAPValue(**s) for s in result["shap_values"]],
         plain_language   = result["plain_language"],
+        shap_available   = result["shap_available"],
+        explanation_warning = result["explanation_warning"],
     )

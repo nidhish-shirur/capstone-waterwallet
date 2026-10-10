@@ -30,4 +30,6 @@ def ml_yield(payload: MLYieldRequest) -> MLYieldResponse:
         monthly_yield_kl = result["monthly_yield_kl"],
         annual_yield_kl  = result["annual_yield_kl"],
         source           = result["source"],
+        physics_annual_yield_kl = result["physics_annual_yield_kl"],
+        ml_deviation_percent = result["ml_deviation_percent"],
     )

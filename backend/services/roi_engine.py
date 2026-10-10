@@ -23,12 +23,13 @@ def simulate_roi(
     - Compounds tanker tariff by escalation rate and municipal tariff by 5%.
     - Subtracts 3% of installation cost as annual maintenance cost (AMC) from savings.
     - Payback year = first year where cumulative net savings >= installation_cost.
+    - Returns cumulative_without_rwh / cumulative_with_rwh for break-even chart.
     """
-    max_storable_yield = tank_capacity_litres * 4.0
-    storable_annual_yield = min(annual_yield_litres, max_storable_yield)
-
     annual_demand_litres = daily_demand_lpd * 365
-    effective_annual_yield = min(storable_annual_yield, annual_demand_litres)
+    # The annual yield already comes from the roof/rainfall calculation.
+    # A tank can refill during the year, so `tank_capacity * 4` is not a
+    # valid annual cap and severely undercounts harvestable water.
+    effective_annual_yield = min(annual_yield_litres, annual_demand_litres)
 
     # Volumetric offsets
     offset_tanker = min(effective_annual_yield, annual_tanker_volume_litres)
@@ -47,7 +48,7 @@ def simulate_roi(
     )
     annual_maintenance_cost = installation_cost * 0.03
 
-    # Guard: zero tariff ⟹ zero annual_savings
+    # Guard: zero tariff => zero annual_savings
     if water_tariff_per_kl <= 0:
         raise ValueError(
             f"water_tariff_per_kl must be > 0, got {water_tariff_per_kl}."
@@ -58,17 +59,34 @@ def simulate_roi(
     payback_years: Optional[float] = None
     ten_year_savings = 0.0
 
-    current_tanker_rate = tanker_rate_per_kl
+    # Expenditure-trajectory accumulators (in INR) for the break-even chart
+    cumulative_without_rwh = 0.0        # path A: keep buying tanker + municipal water
+    cumulative_with_rwh    = installation_cost  # path B: paid capex upfront
+
+    current_tanker_rate    = tanker_rate_per_kl
     current_municipal_rate = water_tariff_per_kl
 
-    for year in range(1, max(years, 10) + 1):
-        # Volumetric savings this year
+    # Track base spend (pre-escalation anchors)
+    curr_base_tanker    = annual_tanker_spend
+    curr_base_municipal = annual_municipal_spend
+
+    # Keep the requested horizon for payback discovery, while the response
+    # still exposes the separate ten_year_savings metric.
+    for year in range(1, years + 1):
+        # Volumetric savings this year (value of harvested water at current rates)
         year_savings = (offset_tanker_kl * current_tanker_rate) + (offset_municipal_kl * current_municipal_rate)
         # Net savings after deducting AMC
         net_savings = year_savings - annual_maintenance_cost
-        
+
+        # What the society would pay each year without RWH (escalating bills)
+        year_without_rwh = curr_base_tanker + curr_base_municipal
+        # With RWH: residual bills after harvest + maintenance
+        year_with_rwh    = year_without_rwh - year_savings + annual_maintenance_cost
+
         if year <= years:
-            cumulative_savings += net_savings
+            cumulative_savings     += net_savings
+            cumulative_without_rwh += year_without_rwh
+            cumulative_with_rwh    += year_with_rwh
             net_benefit = cumulative_savings - installation_cost
 
             if payback_years is None and net_savings > 0 and cumulative_savings >= installation_cost:
@@ -82,14 +100,18 @@ def simulate_roi(
                     savings=round(net_savings, 2),
                     cumulative_savings=round(cumulative_savings, 2),
                     net_benefit=round(net_benefit, 2),
+                    cumulative_without_rwh=round(cumulative_without_rwh, 2),
+                    cumulative_with_rwh=round(cumulative_with_rwh, 2),
                 )
             )
-            
+
         if year <= 10:
             ten_year_savings += net_savings
-            
-        current_tanker_rate *= (1 + tariff_escalation_rate)
+
+        current_tanker_rate    *= (1 + tariff_escalation_rate)
         current_municipal_rate *= 1.05
+        curr_base_tanker       *= (1 + tariff_escalation_rate)
+        curr_base_municipal    *= 1.05
 
     return ROIResponse(
         payback_years=payback_years,

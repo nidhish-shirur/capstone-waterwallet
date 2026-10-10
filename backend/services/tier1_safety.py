@@ -4,10 +4,11 @@ Tier 1 Safety Gate — WaterWallet
 Hard hydrogeological checks that run BEFORE the ML classifier.
 No model confidence score can override a physical safety constraint.
 
-Three checks (in order):
+Four checks (in order):
   1. Coastal distance ≤ 2.5 km → Force Storage-Only (seawater intrusion risk)
-  2. Soil perm class == 1 AND no borewell → Force Storage-Only (recharge infeasible)
-  3. Borewell present AND depth < 30 m → Force Storage-Only (too shallow for injection)
+  2. No borewell → Force Storage-Only (recharge infrastructure unavailable)
+  3. Soil perm class == 1 → Force Storage-Only (recharge infeasible)
+  4. Borewell present AND depth < 30 m → Force Storage-Only (too shallow for injection)
 
 References:
   CGWB guideline: minimum 2.5 km from coast for safe groundwater recharge.
@@ -19,6 +20,7 @@ from typing import Optional
 
 COASTAL_THRESHOLD_KM = 2.5
 BOREWELL_MIN_DEPTH_M = 30
+MIN_RECHARGE_SOIL_PERM = 2
 
 
 def tier1_safety_gate(
@@ -60,20 +62,32 @@ def tier1_safety_gate(
             ),
         }
 
-    # Check 2 — Soil physically unable to absorb recharge AND no borewell
-    if soil_perm == 1 and borewell == 0:
+    # Check 2 — No borewell infrastructure exists
+    if borewell == 0:
         return {
             "config": "Storage-Only",
             "source": "tier1_safety_gate",
             "safety_triggered": True,
             "reason": (
-                "Soil permeability class 1 (very low / hard rock) with no existing "
-                "borewell. Surface recharge is physically infeasible because water "
-                "cannot penetrate the ground, and there is no injection infrastructure."
+                "No existing borewell on site. Artificial groundwater recharge "
+                "requires dedicated injection borewell infrastructure. Without an "
+                "existing borewell, direct Storage-Only is the physically and economically feasible configuration."
             ),
         }
 
-    # Check 3 — Borewell too shallow for safe injection
+    # Check 3 — Soil physically unable to absorb recharge
+    if soil_perm < MIN_RECHARGE_SOIL_PERM:
+        return {
+            "config": "Storage-Only",
+            "source": "tier1_safety_gate",
+            "safety_triggered": True,
+            "reason": (
+                "Soil permeability class 1 (very low / dense impermeable clay or hard rock). "
+                "Recharge water cannot percolate safely, risking surface waterlogging and poor aquifer intake."
+            ),
+        }
+
+    # Check 4 — Borewell too shallow for safe injection
     if borewell == 1 and borewell_depth < BOREWELL_MIN_DEPTH_M:
         return {
             "config": "Storage-Only",
@@ -82,7 +96,7 @@ def tier1_safety_gate(
             "reason": (
                 f"Borewell depth is {borewell_depth:.0f} m, which is below the "
                 f"minimum {BOREWELL_MIN_DEPTH_M} m required for safe artificial "
-                "recharge injection. A shallow borewell risks aquifer contamination."
+                "recharge injection. A shallow borewell risks unconfined aquifer contamination."
             ),
         }
 

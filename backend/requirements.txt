@@ -8,9 +8,10 @@ alembic>=1.13.0
 psycopg2-binary>=2.9.9
 pydantic-settings>=2.0.0
 passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0  # JWT token encode/decode
 
 # ML / Data Science
-scikit-learn>=1.5.0    # Random Forest, DecisionTree, metrics
+scikit-learn==1.9.0    # Pinned for reproducible model training and loading
 joblib>=1.4.0          # model serialisation (load/save pkl)
 numpy>=1.26.0          # numerical operations
 pandas>=2.2.0          # data manipulation

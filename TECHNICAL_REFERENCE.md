@@ -156,9 +156,10 @@ avgMonthly       = (totalTankerSpend + totalMunicipal) / billingRows.length
 | Usable area deduction | 20% obstacle factor applied to gross traced area |
 | Yield calculation | `usableArea × annualRainfall × runoffCoeff` |
 | Parametric capex | `usableArea × ₹600/m²` (MMR DSR rate) |
-| Live rainfall fetch | Open-Meteo archive API: 10-year daily precipitation for Thane (2015–2024) |
-| 10-year rainfall averaging | Daily data aggregated to monthly, then averaged across all 10 years |
-| Fallback data | IITM climatological normals for Thane if API fails |
+| Live rainfall fetch | Open-Meteo archive API: daily precipitation for the traced centroid (2010–2024) |
+| Rainfall forecast | Auto-SARIMA (`pmdarima`, seasonal period 12) forecasts the next 12 months; historical monthly averages remain the fallback |
+| 15-year rainfall averaging | Daily data aggregated to monthly, then averaged across all 15 years |
+| Fallback data | No rainfall result is shown when the API fails |
 | Monsoon dependency score | % of annual yield that falls in Jun–Sep (JJAS monsoon) |
 | Seasonal chart | Bar chart of monthly rainfall (mm) + line chart of monthly demand (kL) |
 
@@ -196,7 +197,7 @@ estimatedCapex (₹) = usableArea × CAPEX_RATE_PER_SQM
 ### Rainfall API Integration
 
 **Endpoint:** `https://archive-api.open-meteo.com/v1/archive`  
-**Parameters:** `latitude=19.2183`, `longitude=72.9781`, `start_date=2015-01-01`, `end_date=2024-12-31`, `daily=precipitation_sum`
+**Parameters:** traced centroid latitude/longitude, `start_date=2010-01-01`, `end_date=2024-12-31`, `daily=precipitation_sum`
 
 ```javascript
 // Aggregate to monthly totals per year, then average across years
@@ -265,6 +266,38 @@ function runScenario({ annualTanker, annualMunicipal, capex, gamma }) {
     thisYearRwhMaint  = capex × rwhAmc
 
     cumulativeDoNothing += (thisYearTanker + thisYearMunicipal)
+
+    ### Daily Tank Sizer
+
+    `POST /api/roi/tank-sizer` fetches Open-Meteo daily precipitation for 2010–2024
+    and simulates each complete calendar year independently for every candidate tank
+    capacity. The request must provide the traced gross roof area, coordinates, roof
+    surface type, and eligible daily non-potable demand. The service applies the
+    existing `0.80` obstacle/usability factor exactly once.
+
+    The dashboard's planning default uses **65 litres per person per day (LPCD)**
+    for non-potable demand, the midpoint of the 60–70 LPCD source range. It displays
+    the resulting daily demand beside reliability so the denominator is auditable;
+    this remains a planning assumption until society-specific flushing and gardening
+    measurements are entered.
+
+    The accounting is intentionally separated:
+
+    - **Useful water** is water consumed by demand from the tank and is the only
+      volume used to calculate tanker savings.
+    - **Recharge overflow** is reported as an environmental/regulatory benefit when
+      recharge is enabled; it never increases rupee savings.
+    - **Lost overflow** is reported as a design inefficiency when recharge is not
+      enabled.
+
+    If Open-Meteo does not return complete daily years, the endpoint returns an
+    explicit unavailable error. It never fabricates daily rainfall values or silently
+    falls back to monthly averages.
+
+    The candidate list includes a zero-litre "do nothing" baseline. A zero-capacity
+    candidate cannot serve demand, so it receives zero useful water, zero reliability,
+    zero financial savings, and no payback. Leap years (2012, 2016, 2020, and 2024)
+    are simulated over 366 daily records; reliability uses the actual record length.
     cumulativeRWH       += (thisYearMunicipal + thisYearRwhMaint)
     // Note: RWH path still pays municipal bills (partial supply supplement)
     // capex is baked into cumulativeRWH at year 0 as starting value
@@ -294,12 +327,9 @@ annualMunicipal = ((totalMunicipal   / months) × 12) / 100000   [₹ Lakhs]
 capex           = adjustedCapex / 100000                         [₹ Lakhs]
 ```
 
-**Fallback values** (when no billing data entered):
-```
-annualTanker    → 2.0 L    (₹2,00,000/year)
-annualMunicipal → 0.46 L   (₹46,000/year)
-capex           → 4.8 L    (₹4,80,000)
-```
+When billing data is absent, zero is preserved for tanker and municipal spend.
+The municipal tariff falls back explicitly to ₹15/kL only when a valid municipal
+volume and bill are unavailable.
 
 ### Capex Sensitivity Slider
 
@@ -446,6 +476,7 @@ Replaces static payback estimates with probabilistic risk modeling.
 | `GET` | `/api/societies/{id}` | Fetch society details & billing history | Societies |
 | `POST` | `/api/societies/{id}/billing` | Add billing entry row (DB CRUD) | Societies |
 | `POST` | `/api/catchment/calculate` | Open-Meteo historical rainfall + yield | Geospatial |
+| `POST` | `/api/catchment/forecast` | Auto-SARIMA 12-month rainfall forecast + yield | Geospatial |
 | `POST` | `/api/roi/simulate` | Deterministic 10-year ROI simulation | ROI |
 | `POST` | `/api/roi/monte-carlo` | 1,000-scenario Monte Carlo ROI simulation | ROI |
 | `POST` | `/api/ml/recommend` | Dual-tier RWH config recommendation + SHAP | ML — Recommend |
@@ -493,6 +524,15 @@ Fetches historical precipitation from Open-Meteo API and calculates annual & mon
   "roof_surface_type": "concrete"
 }
 ```
+
+#### `POST /api/catchment/forecast`
+Fetches chronological monthly rainfall totals from Open-Meteo, selects a seasonal
+ARIMA configuration using AIC through `pmdarima.auto_arima`, and forecasts the
+next 12 months. The forecasted rainfall is converted to rooftop yield using the
+same runoff and usability factors as the historical catchment endpoint.
+
+If Auto-SARIMA is unavailable or cannot fit the series, the frontend retains the
+historical-average result from `/api/catchment/calculate`.
 
 **Response:**
 ```json

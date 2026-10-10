@@ -64,7 +64,8 @@ export function calculateCanonicalDemand({
   lpcd = IS_LPCD,
   includeLosses = true,
 }) {
-  const base           = numFlats * occupantsPerFlat * lpcd;
+  const totalOccupants = Math.floor(numFlats * occupantsPerFlat);
+  const base           = totalOccupants * lpcd;
   const afterUFW       = includeLosses ? base * (1 + UFW_LOSS_FACTOR) : base;
   const adjustedDemand = Math.round(afterUFW * DEMAND_BUFFER_FACTOR);
   return { baseDemand: Math.round(base), adjustedDemand };

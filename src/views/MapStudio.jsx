@@ -13,7 +13,7 @@ import {
   ComposedChart, Line, Legend
 } from 'recharts';
 import { useWaterWallet } from '../context/WaterWalletContext';
-import { fetchCatchmentData } from '../api/waterwallet';
+import { fetchCatchmentData, fetchRainfallForecast, getMLYield } from '../api/waterwallet';
 import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
 import { formatLitres, formatRupees, formatRainfall, formatArea } from '../utils/formatters';
 
@@ -31,12 +31,7 @@ const THANE_CENTER = [19.2183, 72.9781];
 const CAPEX_RATE_PER_SQM = 600;  // ₹ per m² (MMR parametric DSR rate)
 const OBSTACLE_FACTOR = 0.80; // 20% deduction for roof obstacles
 
-// Open-Meteo archive: 15 full years of daily precipitation for Thane (2010-2025)
-const WEATHER_API_URL =
-  'https://archive-api.open-meteo.com/v1/archive' +
-  '?latitude=19.2183&longitude=72.9781' +
-  '&start_date=2010-01-01&end_date=2024-12-31' +
-  '&daily=precipitation_sum&timezone=Asia/Kolkata';
+// Open-Meteo direct fetch removed, logic moved to backend
 
 // ─── Esri World Imagery ──────────────────────────────────────────────────────
 const ESRI_TILE_URL =
@@ -149,60 +144,25 @@ export default function MapStudio() {
   const {
     setEstimatedCapex,
     setAnnualYield,
-    setAnnualDemand,
     setMonthlyRainfall,
-    flats, occupants,
+    setSiteLatitude,
+    setSiteLongitude,
     monthlyDemand,
     roofSurfaceType,
+    borewell, setBorewell,
+    borewellDepth, setBorewellDepth,
+    soilPerm, setSoilPerm,
+    coastalKm, setCoastalKm,
   } = useWaterWallet();
 
   // ─── Live weather state ──────────────────────────────────────────────────
   const [annualRainfall, setAnnualRainfall] = useState(null);
   const [monthlyMm, setMonthlyMm] = useState(Array(12).fill(0));
-  const [weatherLoading, setWeatherLoading] = useState(true);
+  const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState(false);
+  const [rainfallSource, setRainfallSource] = useState(null);
 
-  // Fetch on mount — compute 10-year average monthly rainfall
-  useEffect(() => {
-    fetch(WEATHER_API_URL)
-      .then((r) => r.json())
-      .then((data) => {
-        const times = data.daily.time;
-        const precip = data.daily.precipitation_sum;
-
-        // Accumulate daily totals by year + month
-        const yearMonthTotals = {};
-        times.forEach((dateStr, i) => {
-          const yr = dateStr.slice(0, 4);
-          const mon = parseInt(dateStr.slice(5, 7), 10) - 1; // 0-indexed
-          if (!yearMonthTotals[yr]) yearMonthTotals[yr] = Array(12).fill(0);
-          yearMonthTotals[yr][mon] += (precip[i] || 0);
-        });
-
-        // Average each month across years
-        const years = Object.values(yearMonthTotals);
-        const avgMonthly = Array(12).fill(0).map((_, m) =>
-          Math.round(years.reduce((s, y) => s + y[m], 0) / years.length)
-        );
-        const avgAnnual = avgMonthly.reduce((s, v) => s + v, 0);
-
-        setMonthlyMm(avgMonthly);
-        setAnnualRainfall(avgAnnual);
-        setWeatherLoading(false);
-      })
-      .catch(() => {
-        // Thane climatological fallback (IITM normals, mm per month)
-        const fallback = [1, 1, 2, 18, 110, 510, 710, 580, 300, 95, 18, 2];
-        setMonthlyMm(fallback);
-        setAnnualRainfall(fallback.reduce((s, v) => s + v, 0));
-        setWeatherError(true);
-        setWeatherLoading(false);
-      });
-  }, []);
-
-
-
-  const effectiveRainfall = annualRainfall || 2500;
+  const effectiveRainfall = annualRainfall || 0;
 
   // ─── Polygon state ───────────────────────────────────────────────────────
   const [points, setPoints] = useState([]);
@@ -242,31 +202,65 @@ export default function MapStudio() {
 
   // ─── State to hold backend-computed catchment yield ──────────────────────
   const [backendYield, setBackendYield] = useState(0);
+  const [mlYieldSource, setMlYieldSource] = useState(null);
+  const [mlYieldDeviation, setMlYieldDeviation] = useState(null);
 
   // ─── Fetch rainfall data dynamically from backend based on centroid coordinates
   useEffect(() => {
     if (!centroid || tracedArea <= 0) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBackendYield(0);
+      setMlYieldSource(null);
+      setMlYieldDeviation(null);
+      setRainfallSource(null);
+      setAnnualRainfall(null);
+      setMonthlyMm(Array(12).fill(0));
+      setWeatherLoading(false);
       return;
     }
 
-    fetchCatchmentData({
-      latitude: centroid[0],
-      longitude: centroid[1],
+    setWeatherLoading(true);
+    setWeatherError(false);
+    const catchmentPayload = {
+      latitude: centroid[1],
+      longitude: centroid[0],
       roof_area_sqm: tracedArea,
       roof_surface_type: roofSurfaceType,
-    })
-      .then((data) => {
+    };
+
+    fetchCatchmentData(catchmentPayload)
+      .then((historicalData) =>
+        fetchRainfallForecast(catchmentPayload)
+          .then((forecastData) => ({ data: forecastData, source: forecastData.source }))
+          .catch((forecastError) => {
+            console.warn('Auto-SARIMA forecast unavailable; using historical rainfall average.', forecastError);
+            return { data: historicalData, source: 'historical_average' };
+          })
+      )
+      .then(({ data, source }) => {
+        setRainfallSource(source);
         setAnnualRainfall(data.annual_rainfall_mm);
         setMonthlyMm(data.monthly_rainfall_mm);
-        setBackendYield(data.annual_yield_litres);
         setMonthlyRainfall(data.monthly_rainfall_mm);
+        setBackendYield(data.annual_yield_litres);
+        
+        return getMLYield({
+          rooftop_area_m2: tracedArea,
+          monthly_rainfall_mm: data.monthly_rainfall_mm
+        });
+      })
+      .then((mlData) => {
+        setMlYieldSource(mlData.source);
+        setMlYieldDeviation(mlData.ml_deviation_percent);
+        setWeatherLoading(false);
       })
       .catch((err) => {
-        console.error("Backend catchment calculation error:", err);
+        console.error("Backend calculation error:", err);
+        setWeatherError(true);
+        setWeatherLoading(false);
       });
-  }, [centroid, tracedArea, roofSurfaceType, setMonthlyRainfall]);
+    setSiteLatitude(centroid[1]);
+    setSiteLongitude(centroid[0]);
+  }, [centroid, tracedArea, roofSurfaceType, setMonthlyRainfall, setSiteLatitude, setSiteLongitude]);
 
   // ─── Monsoon dependency score ─────────────────────────────────────────────
   const monsoonPct = useMemo(() => {
@@ -278,12 +272,16 @@ export default function MapStudio() {
 
   // ─── Step 3: Sync to global context ──────────────────────────────────────
   useEffect(() => {
-    setEstimatedCapex(estimatedCapex);
-    setAnnualYield(backendYield || maxYield);
-    setMonthlyRainfall(monthlyMm);
-    // Annual demand in litres for self-sufficiency badge in Phase 3
-    setAnnualDemand(Number(flats) * Number(occupants) * 135 * 365);
-  }, [estimatedCapex, backendYield, maxYield, monthlyMm, flats, occupants]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (estimatedCapex > 0) {
+      setEstimatedCapex(estimatedCapex);
+    }
+    if (backendYield > 0 || maxYield > 0) {
+      setAnnualYield(backendYield || maxYield);
+    }
+    if (monthlyMm && monthlyMm.some(v => v > 0)) {
+      setMonthlyRainfall(monthlyMm);
+    }
+  }, [estimatedCapex, backendYield, maxYield, monthlyMm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── KPI sidebar cards ─────────────────────────────────────────────────────
   const liveMetrics = [
@@ -291,7 +289,13 @@ export default function MapStudio() {
       icon: Cloud,
       label: 'Live Rainfall Data',
       value: weatherLoading ? 'Fetching…' : formatRainfall(effectiveRainfall),
-      unit: weatherError ? 'Thane fallback (IITM normals)' : '15-year avg (2010–2025) · Open-Meteo',
+      unit: weatherError
+        ? 'Rainfall unavailable'
+        : annualRainfall == null
+        ? 'Trace a valid roof polygon to fetch rainfall'
+        : rainfallSource === 'auto_sarima'
+        ? '12-month Auto-SARIMA forecast · Open-Meteo history'
+        : '15-year average (2010–2024) · Open-Meteo',
       color: 'text-blue-600', bg: 'bg-blue-50', highlight: false,
     },
     {
@@ -301,7 +305,10 @@ export default function MapStudio() {
     },
     {
       icon: Droplets, label: 'Max Harvestable Yield',
-      value: formatLitres(maxYield), unit: 'per year',
+      value: formatLitres(backendYield || maxYield),
+      unit: mlYieldSource
+        ? `Physics authoritative · ML deviation ${mlYieldDeviation == null ? 'N/A' : `${mlYieldDeviation}%`}`
+        : 'per year',
       color: 'text-teal-600', bg: 'bg-teal-50', highlight: false,
     },
     {
@@ -483,6 +490,35 @@ export default function MapStudio() {
               </p>
             </div>
           )}
+          
+          {/* ── ML Site Inputs ── */}
+          <div className="bg-white rounded-2xl shadow-md p-4 border border-slate-100">
+            <p className="text-xs font-semibold text-slate-700 mb-3">Site Conditions (for ML Models)</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase">Existing Borewells</label>
+                <input type="number" min="0" value={borewell} onChange={e => setBorewell(Number(e.target.value))} className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500" />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase">Avg Depth (m)</label>
+                <input type="number" min="0" value={borewellDepth} onChange={e => setBorewellDepth(Number(e.target.value))} className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500" disabled={borewell === 0} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase">Soil Permeability</label>
+                <select value={soilPerm} onChange={e => setSoilPerm(Number(e.target.value))} className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 bg-white">
+                  <option value={1}>1 - Very Poor (Clay)</option>
+                  <option value={2}>2 - Poor (Silt)</option>
+                  <option value={3}>3 - Moderate (Loam)</option>
+                  <option value={4}>4 - Good (Sand)</option>
+                  <option value={5}>5 - High (Gravel)</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase">Distance to Coast (km)</label>
+                <input type="number" min="0" value={coastalKm} onChange={e => setCoastalKm(Number(e.target.value))} className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500" />
+              </div>
+            </div>
+          </div>
 
           {/* Peer-reviewed math note */}
           <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-xs text-green-700 mt-auto">

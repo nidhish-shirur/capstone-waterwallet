@@ -13,8 +13,10 @@ instructions to run the training script first.
 """
 
 import os
+import json
 import joblib
 import numpy as np
+import sklearn
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -25,6 +27,7 @@ _ML_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "ml_mod
 _CLASSIFIER_PATH   = os.path.join(_ML_DIR, "waterwallet_config_classifier.pkl")
 _YIELD_MODEL_PATH  = os.path.join(_ML_DIR, "waterwallet_yield_model.pkl")
 _LABEL_ENC_PATH    = os.path.join(_ML_DIR, "waterwallet_label_encoder.pkl")
+_METADATA_PATH     = os.path.join(_ML_DIR, "model_metadata.json")
 
 # Features in the exact order the models were trained with
 CLF_FEATURES = [
@@ -42,7 +45,7 @@ YIELD_FEATURES = [
     "month",
     "rain_mm",
     "annual_rain_mm",
-    "peak_day",
+    "peak_day_proxy",
     "lag1_rain",
     "lag2_rain",
     "lag3_rain",
@@ -58,11 +61,12 @@ _clf       = None
 _yield_rf  = None
 _le        = None
 _shap_exp  = None
+_shap_warning = None
 
 
 def _load_models():
     """Load all three models once and cache them."""
-    global _clf, _yield_rf, _le, _shap_exp
+    global _clf, _yield_rf, _le, _shap_exp, _shap_warning
 
     if _clf is not None:
         return  # already loaded
@@ -71,6 +75,7 @@ def _load_models():
         (_CLASSIFIER_PATH,  "Configuration classifier"),
         (_YIELD_MODEL_PATH, "Yield regressor"),
         (_LABEL_ENC_PATH,   "Label encoder"),
+        (_METADATA_PATH,    "Model metadata"),
     ]:
         if not os.path.exists(path):
             raise RuntimeError(
@@ -79,6 +84,15 @@ def _load_models():
                 "save the models."
             )
 
+    with open(_METADATA_PATH, encoding="utf-8") as metadata_file:
+        metadata = json.load(metadata_file)
+    trained_version = metadata.get("sklearn_version")
+    if trained_version != sklearn.__version__:
+        raise RuntimeError(
+            f"ML artifacts were trained with scikit-learn {trained_version}, "
+            f"but runtime has {sklearn.__version__}. Retrain the models first."
+        )
+
     _clf      = joblib.load(_CLASSIFIER_PATH)
     _yield_rf = joblib.load(_YIELD_MODEL_PATH)
     _le       = joblib.load(_LABEL_ENC_PATH)
@@ -86,9 +100,19 @@ def _load_models():
     # SHAP TreeExplainer — loaded lazily so shap import error doesn't break the server
     try:
         import shap
-        _shap_exp = shap.TreeExplainer(_clf)
-    except ImportError:
+        # CalibratedClassifierCV wraps the fitted forests. Explain the first
+        # calibrated forest; its features and class semantics match inference.
+        shap_model = _clf
+        calibrated_models = getattr(_clf, "calibrated_classifiers_", None)
+        if calibrated_models:
+            shap_model = getattr(calibrated_models[0], "estimator", calibrated_models[0])
+        _shap_exp = shap.TreeExplainer(shap_model)
+    except ImportError as exc:
         _shap_exp = None
+        _shap_warning = f"SHAP is unavailable: {exc}"
+    except Exception as exc:
+        _shap_exp = None
+        _shap_warning = f"SHAP explanation initialization failed: {exc}"
 
 
 def _build_shap_explanation(
@@ -183,10 +207,12 @@ def predict_config(
           "plain_language": "Hybrid recommended because ..."
         }
     """
+    global _shap_warning
     _load_models()
 
+    bw_depth = float(borewell_depth) if int(borewell) == 1 else 0.0
     feature_values = [
-        rooftop_area, float(borewell), borewell_depth,
+        rooftop_area, float(borewell), bw_depth,
         float(soil_perm), coastal_km, annual_rain_mm, peak_day_mm,
     ]
     X = np.array([feature_values])
@@ -202,8 +228,8 @@ def predict_config(
         try:
             sv = _shap_exp.shap_values(X)
             shap_rows = _build_shap_explanation(sv, feature_values, pred_enc)
-        except Exception:
-            pass  # SHAP failure is non-fatal
+        except Exception as exc:
+            _shap_warning = f"SHAP explanation failed: {exc}"
 
     plain = _plain_language_explanation(pred_label, shap_rows)
 
@@ -215,6 +241,8 @@ def predict_config(
         "safety_reason":    None,
         "shap_values":      shap_rows,
         "plain_language":   plain,
+        "shap_available":   bool(shap_rows),
+        "explanation_warning": _shap_warning,
     }
 
 
@@ -252,14 +280,16 @@ def predict_yield(
     months     = np.arange(1, 13, dtype=float)
     sin_month  = np.sin(2 * np.pi * months / 12)
     cos_month  = np.cos(2 * np.pi * months / 12)
-    peak_day   = rain  # simplified: peak ≈ monthly total / 30 × scale
+    # The model is trained with this monthly-total proxy because the API does
+    # not receive daily observations needed to calculate a true daily peak.
+    peak_day_proxy = rain / 30.0
 
     X_rows = np.column_stack([
         np.full(12, rooftop_area),  # rooftop_area
         months,                      # month
         rain,                        # rain_mm
         np.full(12, annual_rain),    # annual_rain_mm
-        peak_day / 30.0,             # peak_day (approx)
+        peak_day_proxy,              # peak_day proxy (monthly total / 30)
         lag1,                        # lag1_rain
         lag2,                        # lag2_rain
         lag3,                        # lag3_rain
@@ -268,10 +298,17 @@ def predict_yield(
     ])
 
     monthly_kl = _yield_rf.predict(X_rows).clip(0)
+    physics_monthly_kl = rooftop_area * np.maximum(rain, 0) * 0.80 * 0.90 / 1000.0
+    physics_annual_kl = float(physics_monthly_kl.sum())
+    annual_kl = float(monthly_kl.sum())
     return {
         "monthly_yield_kl": [round(float(v), 3) for v in monthly_kl],
-        "annual_yield_kl":  round(float(monthly_kl.sum()), 3),
+        "annual_yield_kl":  round(annual_kl, 3),
         "source":           "rf_regressor",
+        "physics_annual_yield_kl": round(physics_annual_kl, 3),
+        "ml_deviation_percent": round(
+            ((annual_kl - physics_annual_kl) / physics_annual_kl) * 100, 2
+        ) if physics_annual_kl > 0 else None,
     }
 
 
@@ -288,4 +325,6 @@ def _physics_yield_fallback(
         "monthly_yield_kl": [round(float(v), 3) for v in monthly_kl],
         "annual_yield_kl":  round(float(monthly_kl.sum()), 3),
         "source":           "physics_formula",
+        "physics_annual_yield_kl": round(float(monthly_kl.sum()), 3),
+        "ml_deviation_percent": None,
     }

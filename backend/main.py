@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import geospatial, roi, societies, ml_recommend, ml_yield
+from routers import advisory, geospatial, roi, societies, ml_recommend, ml_yield
+# AUTH TEMPORARILY DISABLED — uncomment when DB is fixed:
+# from routers import auth
 
 app = FastAPI(
     title="WaterWallet API",
@@ -23,11 +25,14 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+# AUTH TEMPORARILY DISABLED
+# app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(societies.router,    prefix="/api/societies",  tags=["Societies"])
 app.include_router(geospatial.router,   prefix="/api/catchment",  tags=["Geospatial"])
 app.include_router(roi.router,          prefix="/api/roi",         tags=["ROI"])
 app.include_router(ml_recommend.router, prefix="/api/ml",          tags=["ML — Recommend"])
 app.include_router(ml_yield.router,     prefix="/api/ml",          tags=["ML — Yield"])
+app.include_router(advisory.router,     prefix="/api/advisory",     tags=["AI Advisory"])
 
 
 @app.get("/")

@@ -1,6 +1,8 @@
 import React from 'react';
-import { Bell, Settings, User } from 'lucide-react';
+import { Bell, User } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+// AUTH TEMPORARILY DISABLED
+// import { useAuth } from '../context/AuthContext';
 
 const phaseConfig = {
   'virtual-meter': {
@@ -28,6 +30,9 @@ const fallbackConfig = {
 
 export default function Topbar() {
   const { pathname } = useLocation();
+  // AUTH TEMPORARILY DISABLED
+  // const { user, logout } = useAuth();
+  
   // pathname is like '/virtual-meter' — strip the leading slash
   const key = pathname.replace('/', '');
   const config = phaseConfig[key] || fallbackConfig;
@@ -45,11 +50,14 @@ export default function Topbar() {
       </div>
 
       <div className="flex items-center gap-3">
+        {/* AUTH TEMPORARILY DISABLED — restore user email + logout button when auth is re-enabled
+        {user && <span className="text-xs font-medium text-slate-500 mr-2">{user.email}</span>}
+        <button onClick={logout} title="Sign out" className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors">
+          <LogOut size={18} />
+        </button>
+        */}
         <button className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors">
           <Bell size={18} />
-        </button>
-        <button className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-colors">
-          <Settings size={18} />
         </button>
         <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-sm cursor-pointer">
           <User size={16} className="text-white" />

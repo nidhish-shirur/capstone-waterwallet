@@ -4,7 +4,7 @@ import {
   Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, ComposedChart, BarChart, Bar, Cell
 } from 'recharts';
-import { simulateROI, runMonteCarlo, getMLRecommendation } from '../api/waterwallet';
+import { simulateROI, runMonteCarlo, getMLRecommendation, getWaterAdvisory, saveSocietyAnalysis, sizeTank } from '../api/waterwallet';
 import { useWaterWallet } from '../context/WaterWalletContext';
 
 // ─── Scenario definitions ────────────────────────────────────────────────────
@@ -13,9 +13,23 @@ const SCENARIOS = [
   { key: 'current',      label: 'Current',        gamma: 0.08, color: '#dc2626', dash: null  },
   { key: 'highRisk',     label: 'High-Risk',      gamma: 0.12, color: '#7c3aed', dash: '3 3' },
 ];
+const ROI_HORIZON_YEARS = 10;
+const DISPLAYED_SAVINGS_YEARS = 10;
+const ROOF_USABLE_FACTOR = 0.80;
+const NON_POTABLE_LPCD = 65;
 
 // ─── ROI engine (pure function) ─────────────────────────────────────────────
-function runScenario({ annualTanker, annualMunicipal, capex, gamma, annualYield, annualDemand }) {
+function runScenario({
+  annualTanker,
+  annualMunicipal,
+  annualTankerVolumeLitres,
+  capex,
+  gamma,
+  annualYield,
+  annualDemand,
+  tankCapacityLitres,
+  waterTariffPerKl = 15,
+}) {
   const municipalInflation = 0.05;
   const rwhAmc             = 0.03;
   let cumulativeDoNothing  = 0;
@@ -27,18 +41,23 @@ function runScenario({ annualTanker, annualMunicipal, capex, gamma, annualYield,
   const demandL = annualDemand || 0;
   const yieldL = annualYield || 0;
   // Effective harvestable yield capped by society annual demand
+  // Annual yield is already rainfall/roof based; a refillable tank is not an
+  // annual volume limit. Demand-gate the yield, but do not use tank * 4.
   const effectiveYield = Math.min(yieldL, demandL);
 
-  // Default tanker rate of ₹150/kL = ₹0.15/L
-  const annualTankerVolumeL = (annualTanker * 100000) / 0.15;
+  const annualTankerVolumeL = Math.max(0, annualTankerVolumeLitres || 0);
+  const tankerRatePerLitre = annualTankerVolumeL > 0
+    ? (annualTanker * 100000) / annualTankerVolumeL
+    : 0;
+  const municipalRatePerLitre = waterTariffPerKl / 1000;
   
   const offsetTankerL = Math.min(effectiveYield, annualTankerVolumeL);
   const offsetMunicipalL = Math.min(effectiveYield - offsetTankerL, Math.max(0, demandL - annualTankerVolumeL));
 
-  const savingsTankerLakhs = (offsetTankerL * 0.15) / 100000;
-  const savingsMunicipalLakhs = (offsetMunicipalL * 0.015) / 100000;
+  const savingsTankerLakhs = (offsetTankerL * tankerRatePerLitre) / 100000;
+  const savingsMunicipalLakhs = (offsetMunicipalL * municipalRatePerLitre) / 100000;
 
-  for (let i = 1; i <= 10; i++) {
+  for (let i = 1; i <= ROI_HORIZON_YEARS; i++) {
     const thisYearTankerSavings = savingsTankerLakhs * Math.pow(1 + gamma, i - 1);
     const thisYearMunicipalSavings = savingsMunicipalLakhs * Math.pow(1 + municipalInflation, i - 1);
     const thisYearSavings = thisYearTankerSavings + thisYearMunicipalSavings;
@@ -62,7 +81,12 @@ function runScenario({ annualTanker, annualMunicipal, capex, gamma, annualYield,
       withRWH:     parseFloat(cumulativeRWH.toFixed(2)),
     });
   }
-  return { rows, breakEven: breakEven || '> 10 Yrs', finalDoNothing: cumulativeDoNothing };
+  return {
+    rows,
+    breakEven: breakEven || `> ${ROI_HORIZON_YEARS} Yrs`,
+    finalDoNothing: cumulativeDoNothing,
+    annualSavings: Math.max(0, savingsTankerLakhs + savingsMunicipalLakhs - (capex * rwhAmc)),
+  };
 }
 
 // ─── Custom Tooltip ──────────────────────────────────────────────────────────
@@ -105,7 +129,7 @@ const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
             key={s.key}
             type="monotone"
             dataKey={s.key}
-            name={`${s.label} (${(s.gamma * 100).toFixed(0)}% inflation)`}
+            name={`Without RWH · ${s.label} (${(s.gamma * 100).toFixed(0)}% inflation)`}
             stroke={s.color}
             strokeWidth={2}
             strokeDasharray={s.dash || undefined}
@@ -126,7 +150,7 @@ const BreakEvenChart = memo(function BreakEvenChart({ chartData, breakEvens }) {
         />
 
         {SCENARIOS.map((s) =>
-          breakEvens[s.key] && breakEvens[s.key] !== '> 10 Yrs' ? (
+          breakEvens[s.key] &&           breakEvens[s.key] !== `> ${ROI_HORIZON_YEARS} Yrs` ? (
             <ReferenceLine
               key={`ref-${s.key}`}
               x={breakEvens[s.key]}
@@ -172,29 +196,287 @@ const MonteCarloChart = memo(function MonteCarloChart({ probData }) {
   );
 });
 
-// ─── Capex Slider ─────────────────────────────────────────────────────────────
-function CapexSlider({ value, onChange }) {
+function ImplementationPlan({ payback, recommendedConfiguration }) {
+  const [expanded, setExpanded] = useState(false);
+  const steps = [
+    'Verify rooftop structural capacity and available storage area.',
+    'Obtain at least two installation quotations using the estimated configuration.',
+    'Confirm tank placement, filtration, overflow, and maintenance responsibilities.',
+    'Track actual water usage through the first monsoon and compare it with this forecast.',
+  ];
+
   return (
-    <div className="bg-white rounded-2xl shadow-md p-5 border border-slate-100">
-      <div className="flex items-center gap-2 mb-3">
-        <SlidersHorizontal size={16} className="text-blue-600" />
-        <p className="text-sm font-semibold text-slate-700">Capex Sensitivity</p>
-        <span className="ml-auto text-sm font-bold text-blue-700">₹{value}/m²</span>
+    <section className="bg-white rounded-2xl shadow-md border border-slate-100">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="w-full flex items-center justify-between gap-4 p-6 text-left"
+        aria-expanded={expanded}
+      >
+        <div>
+          <h2 className="text-base font-bold text-slate-800">Suggested Implementation Plan</h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Optional practical next steps based on the current simulation.
+          </p>
+        </div>
+        <span className="text-xs font-semibold text-indigo-700">{expanded ? 'Hide' : 'Show'} steps</span>
+      </button>
+      {expanded && (
+        <div className="px-6 pb-6">
+          <div className="rounded-xl bg-indigo-50 border border-indigo-100 p-4 mb-4 text-sm text-indigo-900">
+            Start by validating the recommended <strong>{recommendedConfiguration}</strong> configuration.
+            The current estimate indicates a payback of <strong>{payback}</strong>, subject to site
+            verification and actual rainfall.
+          </div>
+          <ol className="list-decimal pl-5 space-y-2 text-sm text-slate-700">
+            {steps.map((step) => <li key={step}>{step}</li>)}
+          </ol>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Site & Simulation Parameters Controls ───────────────────────────────────
+function SiteSimulationControls({
+  rooftopArea,
+  onRooftopChange,
+  borewell,
+  onBorewellChange,
+  borewellDepth,
+  onBorewellDepthChange,
+  soilPerm,
+  onSoilPermChange,
+  coastalKm,
+  onCoastalKmChange,
+  capexRatePerSqm,
+  onCapexRateChange,
+  tankCapacityLitres,
+  onTankCapacityChange,
+  rainfallReductionPercent,
+  onRainfallReductionChange,
+}) {
+  return (
+    <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+        <div className="flex items-center gap-2">
+          <SlidersHorizontal className="text-blue-600" size={18} />
+          <h2 className="text-sm font-bold text-slate-800">
+            Interactive What-If Simulator & Site Parameters
+          </h2>
+        </div>
+        <span className="text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full font-medium">
+          Modify any parameter below to recalculate AI recommendation live
+        </span>
       </div>
-      <input
-        id="capex-slider"
-        type="range"
-        min={400}
-        max={800}
-        step={50}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-blue-600"
-      />
-      <div className="flex justify-between text-xs text-slate-400 mt-1">
-        <span>₹400 (Budget)</span>
-        <span>₹600 (MMR DSR)</span>
-        <span>₹800 (Premium)</span>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* 1. Rooftop Area */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Rooftop Area
+            </label>
+            <span className="text-xs font-black text-blue-700">
+              {Math.round(rooftopArea)} m²
+            </span>
+          </div>
+          <input
+            type="range"
+            min={100}
+            max={1800}
+            step={25}
+            value={Math.round(rooftopArea)}
+            onChange={(e) => onRooftopChange(Number(e.target.value))}
+            className="w-full accent-blue-600 mt-1"
+          />
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+            <span>100 m²</span>
+            <span className="text-blue-600 font-semibold">500 m² (Threshold)</span>
+            <span>1800 m²</span>
+          </div>
+        </div>
+
+        {/* Storage capacity sensitivity */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Tank Capacity
+            </label>
+            <span className="text-xs font-black text-blue-700">{tankCapacityLitres.toLocaleString()} L</span>
+          </div>
+          <input
+            type="range"
+            min={10000}
+            max={100000}
+            step={5000}
+            value={tankCapacityLitres}
+            onChange={(e) => onTankCapacityChange(Number(e.target.value))}
+            className="w-full accent-blue-600 mt-1"
+          />
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+            <span>10,000 L</span><span>100,000 L</span>
+          </div>
+        </div>
+
+        {/* Rainfall sensitivity */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Rainfall Reduction
+            </label>
+            <span className="text-xs font-black text-blue-700">{rainfallReductionPercent}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={50}
+            step={5}
+            value={rainfallReductionPercent}
+            onChange={(e) => onRainfallReductionChange(Number(e.target.value))}
+            className="w-full accent-blue-600 mt-1"
+          />
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+            <span>Current rainfall</span><span>50% lower</span>
+          </div>
+        </div>
+
+        {/* 2. Existing Borewells & Depth */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Borewell Presence
+            </label>
+            <div className="flex rounded-md overflow-hidden border border-slate-300">
+              <button
+                type="button"
+                onClick={() => onBorewellChange(1)}
+                className={`px-2.5 py-0.5 text-xs font-bold transition-colors ${
+                  borewell === 1
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={() => onBorewellChange(0)}
+                className={`px-2.5 py-0.5 text-xs font-bold transition-colors ${
+                  borewell === 0
+                    ? 'bg-red-600 text-white'
+                    : 'bg-white text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                No
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-2">
+            <div className="flex justify-between items-center text-[11px] text-slate-600 mb-0.5">
+              <span>Borewell Depth:</span>
+              <span className={`font-bold ${borewell === 0 ? 'text-slate-400' : 'text-blue-700'}`}>
+                {borewell === 1 ? `${Math.round(borewellDepth)} m` : 'N/A (No Borewell)'}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={15}
+              max={180}
+              step={5}
+              disabled={borewell === 0}
+              value={borewell === 1 ? Math.round(borewellDepth) : 0}
+              onChange={(e) => onBorewellDepthChange(Number(e.target.value))}
+              className="w-full accent-blue-600 disabled:opacity-30"
+            />
+            <div className="flex justify-between text-[10px] text-slate-400 mt-0.5">
+              <span className={borewellDepth < 30 && borewell === 1 ? "text-amber-600 font-bold" : ""}>&lt; 30m (Unsafe)</span>
+              <span>80m</span>
+              <span>180m</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 3. Soil Permeability */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Soil Permeability
+            </label>
+            <span className="text-xs font-bold text-blue-700">
+              Class {soilPerm}
+            </span>
+          </div>
+          <select
+            value={soilPerm}
+            onChange={(e) => onSoilPermChange(Number(e.target.value))}
+            className="w-full mt-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs font-medium focus:ring-1 focus:ring-blue-500 bg-white"
+          >
+            <option value={1}>1 - Clay (Impermeable)</option>
+            <option value={2}>2 - Silt (Poor Infiltration)</option>
+            <option value={3}>3 - Loam (Moderate - MMR Standard)</option>
+            <option value={4}>4 - Sandy Loam / Laterite (Good)</option>
+            <option value={5}>5 - Gravel / Coarse Sand (High)</option>
+          </select>
+          <p className="text-[10px] text-slate-400 mt-1 leading-snug">
+            {soilPerm <= 1
+              ? '⚠️ Class 1 impermeable clay forces Storage-Only.'
+              : soilPerm >= 3
+              ? '✓ Permeable subsoil supports borewell recharge.'
+              : 'Moderate absorption capacity.'}
+          </p>
+        </div>
+
+        {/* 4. Distance to Coast */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Coastal Proximity
+            </label>
+            <span className={`text-xs font-black ${coastalKm <= 2.5 ? 'text-amber-600' : 'text-blue-700'}`}>
+              {coastalKm.toFixed(1)} km
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0.5}
+            max={35}
+            step={0.5}
+            value={coastalKm}
+            onChange={(e) => onCoastalKmChange(Number(e.target.value))}
+            className="w-full accent-blue-600 mt-1"
+          />
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+            <span className={coastalKm <= 2.5 ? "text-amber-600 font-bold" : ""}>&le; 2.5 km (Salinity Risk)</span>
+            <span>15 km</span>
+            <span>35 km</span>
+          </div>
+        </div>
+
+        {/* 5. Capex Sensitivity */}
+        <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 md:col-span-2">
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Capex Rate (Sensitivity)
+            </label>
+            <span className="text-xs font-bold text-blue-700">₹{capexRatePerSqm}/m²</span>
+          </div>
+          <input
+            type="range"
+            min={400}
+            max={800}
+            step={50}
+            value={capexRatePerSqm}
+            onChange={(e) => onCapexRateChange(Number(e.target.value))}
+            className="w-full accent-blue-600 mt-1"
+          />
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+            <span>₹400 (Economy)</span>
+            <span className="text-blue-600 font-semibold">₹600 (MMR DSR Standard)</span>
+            <span>₹800 (Premium)</span>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -235,29 +517,96 @@ function SelfSufficiencyBadge({ annualYield, annualDemand }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function ROIDashboard() {
   const {
-    totalTankerSpend, totalMunicipal, billingMonths, estimatedCapex,
-    annualYield, annualDemand, capexRatePerSqm, setCapexRatePerSqm,
+    societyId,
+    totalTankerSpend, totalMunicipal, totalTankerVolume, billingMonths,
+    estimatedCapex, setEstimatedCapex,
+    annualYield, setAnnualYield,
+    annualDemand, capexRatePerSqm, setCapexRatePerSqm,
     societyName, flats, occupants,
+    borewell, setBorewell,
+    borewellDepth, setBorewellDepth,
+    soilPerm, setSoilPerm,
+    coastalKm, setCoastalKm,
+    monthlyRainfall
+    , roofSurfaceType, siteLatitude, siteLongitude
   } = useWaterWallet();
 
-  const tracedAreaProxy  = estimatedCapex / 600;
-  const adjustedCapex    = tracedAreaProxy * capexRatePerSqm;
+  // Phase 2 prices usable roof area (gross area × obstacle factor). Recover
+  // the gross area for display/ML while preserving the exact Phase 2 capex.
+  const tracedAreaProxy = Math.max(
+    100,
+    Math.round(estimatedCapex / (capexRatePerSqm * ROOF_USABLE_FACTOR))
+  );
+  const adjustedCapex = Math.max(0, Number(estimatedCapex) || tracedAreaProxy * ROOF_USABLE_FACTOR * capexRatePerSqm);
 
   const months          = billingMonths || 1;
-  const annualTanker    = ((totalTankerSpend / months) * 12) / 100000 || 2.0;
-  const annualMunicipal = ((totalMunicipal   / months) * 12) / 100000 || 0.46;
-  const capex           = (adjustedCapex / 100000) || 4.8;
+  const annualTanker    = ((totalTankerSpend / months) * 12) / 100000;
+  const annualMunicipal = ((totalMunicipal   / months) * 12) / 100000;
+  const annualTankerVolumeLitres = ((totalTankerVolume / months) * 12) || 0;
+  const capex           = adjustedCapex / 100000;
+  const municipalVolumeLitres = Math.max(0, annualDemand - annualTankerVolumeLitres);
+  const fallbackMunicipalTariffPerKl = 15.0;
+  const municipalTariffIsFallback = !(municipalVolumeLitres > 0 && annualMunicipal > 0);
+  const municipalTariffPerKl = !municipalTariffIsFallback
+    ? (annualMunicipal * 100000) / (municipalVolumeLitres / 1000)
+    : fallbackMunicipalTariffPerKl;
+  const [tankCapacityLitres, setTankCapacityLitres] = useState(10000);
+  const [rainfallReductionPercent, setRainfallReductionPercent] = useState(0);
+  const [tankSizerResult, setTankSizerResult] = useState(null);
+  const [tankSizerLoading, setTankSizerLoading] = useState(false);
+  const [tankSizerError, setTankSizerError] = useState(null);
+  const effectiveAnnualYield = annualYield * (1 - rainfallReductionPercent / 100);
+  const nonPotableDemandLitres = Math.max(
+    0,
+    Number(flats || 0) * Number(occupants || 0) * NON_POTABLE_LPCD * 365,
+  );
+  const nonPotableDailyDemand = nonPotableDemandLitres / 365;
 
-  const { chartData, breakEvens, tenYearBleedRange } = useMemo(() => {
+  const handleRunTankSizer = useCallback(async () => {
+    setTankSizerLoading(true);
+    setTankSizerError(null);
+    try {
+      const result = await sizeTank({
+        latitude: Number(siteLatitude),
+        longitude: Number(siteLongitude),
+        gross_roof_area_sqm: tracedAreaProxy,
+        roof_surface_type: roofSurfaceType || 'concrete',
+        daily_demand_litres: nonPotableDemandLitres / 365,
+        tanker_rate_per_litre: annualTankerVolumeLitres > 0
+          ? (annualTanker * 100000) / annualTankerVolumeLitres
+          : 0.8,
+        tank_cost_per_litre: 4,
+        fixed_system_cost: 7200,
+        reliability_target_percent: 80,
+        recharge_enabled: Boolean(borewell),
+      });
+      setTankSizerResult(result);
+    } catch (error) {
+      setTankSizerError(error.response?.data?.detail || error.message || 'Daily tank sizing failed.');
+    } finally {
+      setTankSizerLoading(false);
+    }
+  }, [siteLatitude, siteLongitude, tracedAreaProxy, roofSurfaceType, nonPotableDailyDemand, annualTankerVolumeLitres, annualTanker, borewell]);
+
+  const handleRooftopChange = useCallback((newArea) => {
+    const area = Math.max(50, Number(newArea));
+    setEstimatedCapex(area * ROOF_USABLE_FACTOR * capexRatePerSqm);
+    setAnnualYield(Math.round(area * ROOF_USABLE_FACTOR * 2424 * 0.90));
+  }, [capexRatePerSqm, setEstimatedCapex, setAnnualYield]);
+
+  // Local fallback if backend fails
+  const localChartData = useMemo(() => {
     const results = {};
     SCENARIOS.forEach((s) => {
       results[s.key] = runScenario({
         annualTanker,
         annualMunicipal,
+        annualTankerVolumeLitres,
         capex,
         gamma: s.gamma,
-        annualYield,
+        annualYield: effectiveAnnualYield,
         annualDemand,
+        tankCapacityLitres,
       });
     });
 
@@ -266,7 +615,10 @@ export default function ROIDashboard() {
       conservative: results.conservative.rows[i].doNothing,
       current:      results.current.rows[i].doNothing,
       highRisk:     results.highRisk.rows[i].doNothing,
-      withRWH:      r.withRWH,
+      withRWH:      results.current.rows[i].withRWH,
+      withRWHConservative: results.conservative.rows[i].withRWH,
+      withRWHCurrent: results.current.rows[i].withRWH,
+      withRWHHighRisk: results.highRisk.rows[i].withRWH,
     }));
 
     return {
@@ -280,56 +632,239 @@ export default function ROIDashboard() {
         low:  results.conservative.finalDoNothing.toFixed(2),
         high: results.highRisk.finalDoNothing.toFixed(2),
       },
+      investmentSummary: {
+        annualSavings: results.current.annualSavings,
+        tenYearNetBenefit: results.current.rows[9]
+          ? results.current.rows[9].doNothing - results.current.rows[9].withRWH
+          : 0,
+      },
     };
-  }, [annualTanker, annualMunicipal, capex, annualYield, annualDemand]);
+  }, [annualTanker, annualMunicipal, annualTankerVolumeLitres, capex, effectiveAnnualYield, annualDemand, tankCapacityLitres]);
 
-  // ─── ML & Monte Carlo States ────────────────────────────────────────────────
+  // ─── ML & Monte Carlo & ROI States ────────────────────────────────────────
   const [monteCarloResult, setMonteCarloResult] = useState(null);
   const [mlRecommendResult, setMlRecommendResult] = useState(null);
+  const [roiResult, setRoiResult] = useState(null);
   const [loadingML, setLoadingML] = useState(true);
+  const [errorStatus, setErrorStatus] = useState(null);
+  const [waterAdvisory, setWaterAdvisory] = useState(null);
+  const [advisoryLoading, setAdvisoryLoading] = useState(false);
+  const [advisoryError, setAdvisoryError] = useState(null);
+  const [advisoryFocus, setAdvisoryFocus] = useState('overall decision');
 
   // ─── Fetch ML Recommendation & Monte Carlo from Backend ─────────────────────
   useEffect(() => {
     if (!tracedAreaProxy || !annualDemand) return;
     setLoadingML(true);
+    setErrorStatus(null);
 
     const monthlyDemandKl = (annualDemand / 12) / 1000;
     const rooftopSqm = Math.max(100, tracedAreaProxy);
+    const rainMm = (monthlyRainfall && monthlyRainfall.some(v => v > 0))
+      ? monthlyRainfall.reduce((a, b) => a + b, 0)
+      : 2424;
+    const maxMonthRain = (monthlyRainfall && monthlyRainfall.length > 0) ? Math.max(...monthlyRainfall) : 710;
+    const peakDay = Math.max(50, (maxMonthRain / 4) || 120);
+    const tankerRatePerKl = (annualTanker > 0 && annualTankerVolumeLitres > 0)
+      ? ((annualTanker * 100000) / (annualTankerVolumeLitres / 1000))
+      : 150.0;
 
-    // Call Monte Carlo API
+    // 1. Monte Carlo API
     const mcPromise = runMonteCarlo({
       rooftop_area_m2: rooftopSqm,
       monthly_demand_kl: monthlyDemandKl,
       capex_inr: adjustedCapex,
-      tanker_rate_per_kl: 150.0,
+      tank_capacity_litres: tankCapacityLitres,
+      rainfall_reduction_percent: rainfallReductionPercent,
+      tanker_rate_per_kl: tankerRatePerKl,
+      annual_tanker_volume_litres: annualTankerVolumeLitres,
+      water_tariff_per_kl: municipalTariffPerKl,
       inflation_rate: 0.08,
       n_scenarios: 1000,
-    });
+    }).catch(e => { console.error("Monte Carlo Failed", e); return null; });
 
-    // Call Dual-Tier ML Recommendation API
+    // 2. Dual-Tier ML Recommendation API
     const recPromise = getMLRecommendation({
       rooftop_area: rooftopSqm,
-      borewell: 1,
-      borewell_depth: 95.0,
-      soil_perm: 3,
-      coastal_km: 25.0,
-      annual_rain_mm: 2500.0,
-      peak_day_mm: 120.0,
-    });
+      borewell: Number(borewell) || 0,
+      borewell_depth: Number(borewell) === 1 ? (Number(borewellDepth) || 0) : 0,
+      soil_perm: Number(soilPerm) || 3,
+      coastal_km: Number(coastalKm) || 10,
+      annual_rain_mm: rainMm,
+      peak_day_mm: peakDay,
+    }).catch(e => { console.error("ML Recommend Failed", e); return null; });
 
-    Promise.all([mcPromise, recPromise])
-      .then(([mcData, recData]) => {
+    // 3. ROI Backend Simulator (3 Scenarios)
+    const roiPromises = SCENARIOS.map(s => 
+      simulateROI({
+        daily_demand_lpd: annualDemand / 365,
+        annual_yield_litres: effectiveAnnualYield,
+        tank_capacity_litres: tankCapacityLitres,
+        water_tariff_per_kl: municipalTariffPerKl,
+        installation_cost: adjustedCapex,
+        years: ROI_HORIZON_YEARS,
+        tariff_escalation_rate: s.gamma,
+        annual_tanker_spend: annualTanker * 100000,
+        annual_tanker_volume_litres: annualTankerVolumeLitres,
+        annual_municipal_spend: annualMunicipal * 100000
+      }).catch(e => null)
+    );
+
+    Promise.all([mcPromise, recPromise, ...roiPromises])
+      .then(([mcData, recData, ...roiDataArray]) => {
         setMonteCarloResult(mcData);
         setMlRecommendResult(recData);
+        
+        // If all 3 ROI calls succeeded, map them to UI structure
+        if (roiDataArray[0] && roiDataArray[1] && roiDataArray[2]) {
+           // Older backend processes may still return the legacy 10-year
+           // payload. Use the local canonical calculation until the full
+           // horizon response is available instead of indexing missing rows.
+           const hasFullHorizon = roiDataArray.every(
+             (result) => result.yearly_breakdown.length >= ROI_HORIZON_YEARS
+           );
+           if (!hasFullHorizon) {
+             setRoiResult(null);
+             return;
+           }
+           const rows = [];
+           const bEvens = {};
+           
+           for (let i = 0; i < ROI_HORIZON_YEARS; i++) {
+             rows.push({
+               year: `Y${i+1}`,
+               conservative: roiDataArray[0].yearly_breakdown[i].cumulative_without_rwh / 100000,
+               current: roiDataArray[1].yearly_breakdown[i].cumulative_without_rwh / 100000,
+               highRisk: roiDataArray[2].yearly_breakdown[i].cumulative_without_rwh / 100000,
+               withRWH: roiDataArray[1].yearly_breakdown[i].cumulative_with_rwh / 100000,
+               withRWHConservative: roiDataArray[0].yearly_breakdown[i].cumulative_with_rwh / 100000,
+               withRWHCurrent: roiDataArray[1].yearly_breakdown[i].cumulative_with_rwh / 100000,
+               withRWHHighRisk: roiDataArray[2].yearly_breakdown[i].cumulative_with_rwh / 100000,
+             });
+           }
+           
+           const formatPayback = (years) =>
+             Number.isFinite(years) && years > 0
+               ? `Y${Math.ceil(years)}`
+               : `> ${ROI_HORIZON_YEARS} Yrs`;
+           bEvens.conservative = formatPayback(roiDataArray[0].payback_years);
+           bEvens.current = formatPayback(roiDataArray[1].payback_years);
+           bEvens.highRisk = formatPayback(roiDataArray[2].payback_years);
+           
+           const roiState = {
+             chartData: rows,
+             breakEvens: bEvens,
+             tenYearBleedRange: {
+               low: (roiDataArray[0].yearly_breakdown[9].cumulative_without_rwh / 100000).toFixed(2),
+               high: (roiDataArray[2].yearly_breakdown[9].cumulative_without_rwh / 100000).toFixed(2)
+             }
+           };
+           
+           setRoiResult(roiState);
+           
+           if (societyId) {
+             saveSocietyAnalysis(societyId, {
+               estimated_capex: adjustedCapex,
+               annual_yield_l: effectiveAnnualYield,
+               annual_demand_l: annualDemand,
+               computed_data: {
+                 monte_carlo: mcData,
+                 ml_recommend: recData,
+                 roi: roiState
+               }
+             }).catch(e => console.error("Analysis save error", e));
+           }
+        }
+        
+        if (!mcData && !recData) setErrorStatus("Failed to load AI predictions");
         setLoadingML(false);
       })
       .catch((err) => {
-        console.error("ML / Monte Carlo fetch error:", err);
+        console.error("Dashboard fetch error:", err);
+        setErrorStatus("API connection failed. Using local estimations.");
         setLoadingML(false);
       });
-  }, [tracedAreaProxy, annualDemand, adjustedCapex]);
+  }, [tracedAreaProxy, annualDemand, adjustedCapex, borewell, borewellDepth, soilPerm, coastalKm, monthlyRainfall, annualYield, effectiveAnnualYield, tankCapacityLitres, rainfallReductionPercent, annualTanker, annualTankerVolumeLitres, annualMunicipal, municipalTariffPerKl]);
+
+  // Use API result or fallback to local
+  const chartData = roiResult?.chartData || localChartData.chartData;
+  const breakEvens = roiResult?.breakEvens || localChartData.breakEvens;
+  const tenYearBleedRange = roiResult?.tenYearBleedRange || localChartData.tenYearBleedRange;
+  const currentPayback = breakEvens.current || `> ${ROI_HORIZON_YEARS} Yrs`;
+  const recommendationStatus = currentPayback === `> ${ROI_HORIZON_YEARS} Yrs`
+    ? 'Recommended with caution'
+    : effectiveAnnualYield <= 0
+    ? 'Not currently recommended'
+    : 'Recommended';
+  const recommendationTone = recommendationStatus === 'Recommended'
+    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+    : recommendationStatus === 'Recommended with caution'
+    ? 'bg-amber-50 border-amber-200 text-amber-800'
+    : 'bg-slate-100 border-slate-200 text-slate-700';
+  const paybackYear = Number.parseInt(currentPayback.replace('Y', ''), 10);
+  const paybackComparisonIndex = Number.isFinite(paybackYear)
+    ? Math.min(Math.max(paybackYear, 1), chartData.length) - 1
+    : chartData.length - 1;
+  const costWithoutRwhAtPayback = chartData[paybackComparisonIndex]?.current
+    ?? chartData[chartData.length - 1]?.current
+    ?? 0;
+  const investmentSummary = localChartData.investmentSummary;
+  const featureLabels = {
+    rooftop_area: 'Rooftop area provides collection potential',
+    borewell: 'Existing borewell availability affects recharge options',
+    borewell_depth: 'Borewell depth affects recharge feasibility',
+    soil_perm: 'Soil permeability affects groundwater recharge',
+    coastal_km: 'Coastal distance affects groundwater safety',
+    annual_rain_mm: 'Annual rainfall affects available water',
+    peak_day_mm: 'Peak rainfall affects storage requirements',
+  };
+
+  const handleGenerateAdvisory = useCallback(async (focus = advisoryFocus) => {
+    setAdvisoryLoading(true);
+    setAdvisoryError(null);
+    setAdvisoryFocus(focus);
+    try {
+      const advisoryPayload = {
+        focus: String(focus || 'overall decision'),
+        society_name: String(societyName || 'Society'),
+        flats: Number(flats),
+        occupants_per_flat: Number(occupants),
+        annual_demand_litres: Number(annualDemand),
+        annual_yield_litres: Number(effectiveAnnualYield),
+        estimated_capex_inr: Number(adjustedCapex),
+        current_annual_water_cost_inr: Number((annualTanker + annualMunicipal) * 100000),
+        payback_years: String(breakEvens.current || `> ${ROI_HORIZON_YEARS} Yrs`),
+        self_sufficiency_percent: Math.min(
+          100,
+          Math.max(0, Math.round((Number(effectiveAnnualYield) / Number(annualDemand)) * 100)),
+        ),
+        recommended_configuration: String(mlRecommendResult?.config || 'Pending'),
+        monte_carlo_median_breakeven_year: monteCarloResult?.median_breakeven_year ?? null,
+        monte_carlo_never_break_even_percent: monteCarloResult?.never_break_even_pct ?? null,
+      };
+      const advisory = await getWaterAdvisory(advisoryPayload);
+      setWaterAdvisory(advisory);
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (detail) {
+        setAdvisoryError(detail);
+      } else if (error.request) {
+        setAdvisoryError('The advisory service could not be reached. Make sure the FastAPI backend is running on port 8000.');
+      } else {
+        setAdvisoryError(error.message || 'Unable to generate the advisory right now.');
+      }
+    } finally {
+      setAdvisoryLoading(false);
+    }
+  }, [
+    societyName, flats, occupants, annualDemand, effectiveAnnualYield, adjustedCapex,
+    annualTanker, annualMunicipal, breakEvens.current, mlRecommendResult,
+    monteCarloResult, advisoryFocus,
+  ]);
 
   const handleDownloadReport = useCallback(() => {
+    const sysConfig = mlRecommendResult?.config || 'Configuration Pending';
+    const sysConf = mlRecommendResult?.confidence ? ((mlRecommendResult.confidence) * 100).toFixed(1) : 'N/A';
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -352,11 +887,11 @@ export default function ROIDashboard() {
   <p><strong>Units:</strong> ${flats} flats · ${occupants} occupants/flat</p>
 
   <h2>1. ML Recommended System Configuration</h2>
-  <p><strong>System:</strong> <span class="badge">${mlRecommendResult?.config || 'Hybrid'}</span> (${((mlRecommendResult?.confidence || 0.95) * 100).toFixed(1)}% ML Confidence)</p>
-  <p><strong>Explanation:</strong> ${mlRecommendResult?.plain_language || 'Hybrid configuration recommended.'}</p>
+  <p><strong>System:</strong> <span class="badge">${sysConfig}</span> (${sysConf}% ML Confidence)</p>
+  <p><strong>Explanation:</strong> ${mlRecommendResult?.plain_language || 'Configuration recommended based on site hydrogeology.'}</p>
 
   <h2>2. 1,000-Scenario Monte Carlo Simulation</h2>
-  <p><strong>Median Break-Even Year:</strong> Year ${monteCarloResult?.median_breakeven_year || 4}</p>
+  <p><strong>Median Break-Even Year:</strong> ${monteCarloResult?.median_breakeven_year != null && monteCarloResult.median_breakeven_year <= ROI_HORIZON_YEARS ? `Year ${Math.ceil(monteCarloResult.median_breakeven_year)}` : `>${ROI_HORIZON_YEARS} years`}</p>
   <p><strong>Never Break-Even Risk:</strong> ${monteCarloResult?.never_break_even_pct || 0}%</p>
 </body>
 </html>`;
@@ -372,23 +907,23 @@ export default function ROIDashboard() {
   const kpiCards = [
     {
       icon: TrendingDown,
-      label: '10-Year Water Bleed',
-      value: `₹${tenYearBleedRange.low}–${tenYearBleedRange.high} L`,
-      sub: 'Cumulative expenditure without RWH',
+      label: 'Cost Without RWH by Payback',
+      value: `₹${Number(costWithoutRwhAtPayback).toFixed(2)} L`,
+      sub: `Cumulative cost by the expected payback period (${currentPayback})`,
       valueColor: 'text-red-600', iconBg: 'bg-red-50', iconColor: 'text-red-500', border: 'border-red-100',
     },
     {
       icon: IndianRupee,
       label: 'RWH Project Budget',
       value: `₹${capex.toFixed(2)} L`,
-      sub: `Parametric Capex at ₹${capexRatePerSqm}/m²`,
+      sub: `₹${capexRatePerSqm}/m² · ${tracedAreaProxy} m² rooftop area`,
       valueColor: 'text-blue-700', iconBg: 'bg-blue-50', iconColor: 'text-blue-600', border: 'border-blue-100',
     },
     {
       icon: Cpu,
-      label: 'ML Median Break-Even',
-      value: loadingML ? 'Simulating...' : `Year ${monteCarloResult?.median_breakeven_year || 4}`,
-      sub: `From 1,000 Monte Carlo scenarios (${monteCarloResult?.never_break_even_pct || 0}% risk)`,
+      label: 'Expected Payback Period',
+      value: loadingML ? 'Simulating...' : currentPayback,
+      sub: `Deterministic ROI using current tank capacity; Monte Carlo median: ${monteCarloResult?.median_breakeven_year != null && monteCarloResult.median_breakeven_year <= ROI_HORIZON_YEARS ? `Year ${Math.ceil(monteCarloResult.median_breakeven_year)}` : `>${ROI_HORIZON_YEARS} years`} (${monteCarloResult?.never_break_even_pct || 0}% risk)`,
       valueColor: 'text-green-600', iconBg: 'bg-green-50', iconColor: 'text-green-600', border: 'border-green-100',
     },
   ];
@@ -399,13 +934,13 @@ export default function ROIDashboard() {
       <div className="flex justify-between items-center -mt-2">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            Phase 3: AI-Driven ROI Simulator
+            Phase 3: Rainwater Harvesting Investment Decision
             <span className="text-xs bg-blue-100 text-blue-800 font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1">
               <Sparkles size={12} /> ML Models Active
             </span>
           </h1>
           <p className="text-sm text-slate-500">
-            Random Forest Classifier, SHAP Explainable AI, and 1,000-Iteration Monte Carlo Simulation.
+            Compare project cost, savings, payback period, and implementation risks for your society.
           </p>
         </div>
         <button
@@ -417,9 +952,101 @@ export default function ROIDashboard() {
           Download ML PDF Report
         </button>
       </div>
+      <div className="flex flex-wrap gap-2 mt-4">
+        {[
+          ['Explain my result', 'overall decision'],
+          ['Reduce payback period', 'ways to reduce payback period'],
+          ['Prepare committee summary', 'committee-ready summary'],
+          ['Highlight risks', 'risks and discussion points'],
+        ].map(([label, focus]) => (
+          <button
+            key={focus}
+            type="button"
+            onClick={() => handleGenerateAdvisory(focus)}
+            disabled={advisoryLoading}
+            className="text-xs font-semibold text-indigo-700 bg-white border border-indigo-200 px-3 py-2 rounded-lg hover:bg-indigo-100 disabled:opacity-60"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <section className={`rounded-2xl border p-5 shadow-sm ${recommendationTone}`}>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider opacity-70">Decision summary</p>
+            <h2 className="text-xl font-extrabold mt-1">{recommendationStatus}</h2>
+            <p className="text-sm mt-1 opacity-80">
+              Based on the current yield, project cost, and calculated payback scenario.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="bg-white/70 rounded-xl px-4 py-3">
+              <p className="text-xs opacity-70">Self-sufficiency</p>
+              <p className="font-bold text-lg">{Math.min(100, Math.round((effectiveAnnualYield / annualDemand) * 100))}%</p>
+            </div>
+            <div className="bg-white/70 rounded-xl px-4 py-3">
+              <p className="text-xs opacity-70">Expected payback</p>
+              <p className="font-bold text-lg">{currentPayback}</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* Self-Sufficiency Badge */}
-      <SelfSufficiencyBadge annualYield={annualYield} annualDemand={annualDemand} />
+      <SelfSufficiencyBadge annualYield={effectiveAnnualYield} annualDemand={annualDemand} />
+
+      {/* Daily historical tank sizing */}
+      <section className="bg-cyan-50 rounded-2xl shadow-sm p-6 border border-cyan-200">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Droplets size={19} className="text-cyan-700" /> Daily Historical Tank Sizer
+            </h2>
+            <p className="text-sm text-slate-600 mt-1">
+              Tests tank capacities against daily rainfall from 2010–2024. Demand uses a transparent
+              30% non-potable planning split ({Math.round(nonPotableDemandLitres / 365).toLocaleString()} L/day).
+            </p>
+          </div>
+          <button type="button" onClick={handleRunTankSizer} disabled={tankSizerLoading}
+            className="bg-cyan-700 text-white font-semibold px-4 py-2.5 rounded-xl hover:bg-cyan-800 disabled:opacity-60">
+            {tankSizerLoading ? 'Sizing...' : 'Run Tank Sizer'}
+          </button>
+        </div>
+        {tankSizerError && <p className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{tankSizerError}</p>}
+        {tankSizerResult?.selected_candidate && (
+          <>
+          {(!tankSizerResult.reliability_target_met || tankSizerResult.selection_status !== 'meets_reliability_target') && (
+            <p className="mt-4 text-sm text-amber-800 bg-amber-100 border border-amber-200 rounded-lg p-3">
+              {tankSizerResult.selection_reason || `No tested tank reaches the ${tankSizerResult.reliability_target_percent}% reliability target.`}
+              {' '}Showing the best available non-zero capacity instead of the 0 L baseline.
+            </p>
+          )}
+          <div className="mt-5 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            {[
+              [Number(tankSizerResult.selected_candidate.capacity_litres) === 0 ? 'Do nothing baseline' : 'Selected capacity', `${Number(tankSizerResult.selected_candidate.capacity_litres).toLocaleString()} L`],
+              ['Useful water', `${Math.round(tankSizerResult.selected_candidate.useful_water_litres).toLocaleString()} L/yr`],
+              ['Reliability', `${tankSizerResult.selected_candidate.reliability_percent}%`],
+              ['Recharge overflow', `${Math.round(tankSizerResult.selected_candidate.recharge_overflow_litres).toLocaleString()} L/yr`],
+              ['Lost overflow', `${Math.round(tankSizerResult.selected_candidate.lost_overflow_litres).toLocaleString()} L/yr`],
+              ['Payback', tankSizerResult.selected_candidate.payback_years == null ? 'Not achieved' : `${tankSizerResult.selected_candidate.payback_years} yrs`],
+            ].map(([label, value]) => (
+              <div key={label} className="bg-white/80 rounded-xl p-3">
+                <p className="text-xs text-slate-500">{label}</p>
+                <p className="font-bold text-slate-800 mt-1">{value}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-slate-600 mt-3">
+            Demand used: {Math.round(nonPotableDailyDemand).toLocaleString()} L/day non-potable
+            ({NON_POTABLE_LPCD} LPCD per occupant; source range 60–70 LPCD).
+          </p>
+          </>
+        )}
+        <p className="text-xs text-slate-500 mt-4">
+          Financial savings include useful consumed water only. Recharge overflow is reported separately and is not counted as rupee savings.
+        </p>
+      </section>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -442,6 +1069,107 @@ export default function ROIDashboard() {
         })}
       </div>
 
+      <section className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
+        <div className="mb-4">
+          <h2 className="text-base font-bold text-slate-800">Investment Summary</h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Local estimates use the current scenario and the same assumptions as the ROI chart.
+            Municipal tariff: ₹{municipalTariffPerKl.toFixed(2)}/kL
+            {municipalTariffIsFallback ? ' (fallback; valid billing volume unavailable)' : ' (derived from billing data)'}.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            ['Installation cost', `₹${(adjustedCapex / 100000).toFixed(2)} L`],
+            ['Annual maintenance', `₹${((adjustedCapex * 0.03) / 100000).toFixed(2)} L`],
+            ['Estimated annual saving', `₹${investmentSummary.annualSavings.toFixed(2)} L`],
+            ['10-year net benefit', `₹${investmentSummary.tenYearNetBenefit.toFixed(2)} L`],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-xl bg-slate-50 border border-slate-100 p-4">
+              <p className="text-xs text-slate-500">{label}</p>
+              <p className="text-lg font-extrabold text-slate-800 mt-1">{value}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {errorStatus && (
+        <div className="bg-amber-50 text-amber-800 p-4 rounded-xl flex items-center gap-2 border border-amber-200">
+          <HelpCircle size={18} />
+          <span className="text-sm font-medium">{errorStatus}</span>
+        </div>
+      )}
+
+      <section className="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-2xl shadow-md p-6 border border-indigo-100">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="text-indigo-600" size={20} />
+              <h2 className="text-base font-bold text-slate-800">AI Water Advisory</h2>
+            </div>
+            <p className="text-sm text-slate-600 mt-1">
+              Get a committee-ready explanation grounded in the calculations above.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleGenerateAdvisory}
+            disabled={advisoryLoading}
+            className="inline-flex items-center justify-center gap-2 bg-indigo-600 text-white font-semibold px-4 py-2.5 rounded-xl hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors text-sm"
+          >
+            <Sparkles size={16} />
+            {advisoryLoading ? 'Generating...' : 'Generate Advisory'}
+          </button>
+        </div>
+
+        {advisoryError && (
+          <p className="mt-4 text-sm text-amber-800 bg-amber-100 border border-amber-200 rounded-lg p-3">
+            {advisoryError}
+          </p>
+        )}
+
+        {waterAdvisory && (
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-5 text-sm">
+            <div className="md:col-span-2 bg-white/80 rounded-xl p-4">
+              <h3 className="font-bold text-slate-800 mb-1">Summary</h3>
+              <p className="text-slate-700 leading-relaxed">{waterAdvisory.summary}</p>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <h3 className="font-bold text-slate-800 mb-2">Recommendations</h3>
+              <ul className="list-disc pl-5 space-y-1 text-slate-700">
+                {waterAdvisory.recommendations.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            </div>
+            <div className="bg-white/80 rounded-xl p-4">
+              <h3 className="font-bold text-slate-800 mb-2">Risks and assumptions</h3>
+              <ul className="list-disc pl-5 space-y-1 text-slate-700">
+                {[...waterAdvisory.risks, ...waterAdvisory.assumptions].map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ─── Interactive What-If Simulator & Site Parameters Controls ─── */}
+      <SiteSimulationControls
+        rooftopArea={tracedAreaProxy}
+        onRooftopChange={handleRooftopChange}
+        borewell={borewell}
+        onBorewellChange={setBorewell}
+        borewellDepth={borewellDepth}
+        onBorewellDepthChange={setBorewellDepth}
+        soilPerm={soilPerm}
+        onSoilPermChange={setSoilPerm}
+        coastalKm={coastalKm}
+        onCoastalKmChange={setCoastalKm}
+        capexRatePerSqm={capexRatePerSqm}
+        onCapexRateChange={setCapexRatePerSqm}
+        tankCapacityLitres={tankCapacityLitres}
+        onTankCapacityChange={setTankCapacityLitres}
+        rainfallReductionPercent={rainfallReductionPercent}
+        onRainfallReductionChange={setRainfallReductionPercent}
+      />
+
       {/* ─── Dual-Tier ML Recommendation & SHAP AI Card ─── */}
       <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
         <div className="flex items-center justify-between mb-4">
@@ -453,25 +1181,68 @@ export default function ROIDashboard() {
             <span className="flex items-center gap-1 text-xs bg-amber-100 text-amber-800 font-bold px-3 py-1 rounded-full border border-amber-300">
               <ShieldAlert size={14} /> Tier 1 Safety Gate Override
             </span>
-          ) : (
+          ) : mlRecommendResult ? (
             <span className="flex items-center gap-1 text-xs bg-green-100 text-green-800 font-bold px-3 py-1 rounded-full">
-              <Sparkles size={14} /> {((mlRecommendResult?.confidence || 0.95) * 100).toFixed(1)}% RF Confidence
+              <Sparkles size={14} /> {((mlRecommendResult.confidence || 0) * 100).toFixed(1)}% RF Confidence
             </span>
+          ) : (
+            <span className="text-xs text-slate-400">Loading AI prediction...</span>
           )}
         </div>
+        <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2 mb-4">
+          Model confidence shows how strongly the classifier favors a configuration. It is not a
+          guarantee of water savings, recharge performance, or financial returns.
+        </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="p-5 rounded-xl bg-slate-50 border border-slate-200">
+          <div className={`p-5 rounded-xl border transition-all duration-300 ${
+            mlRecommendResult?.config === 'Storage-Only'
+              ? 'bg-sky-50 border-sky-200'
+              : mlRecommendResult?.config === 'Borewell-Recharge'
+              ? 'bg-emerald-50 border-emerald-200'
+              : 'bg-indigo-50 border-indigo-200'
+          }`}>
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Recommended System</p>
-            <p className="text-2xl font-black text-blue-700 mt-1">{mlRecommendResult?.config || 'Hybrid System'}</p>
-            <p className="text-xs text-slate-600 mt-3 leading-relaxed">
-              {mlRecommendResult?.plain_language || 'Hybrid configuration recommended based on rooftop surface area and hydrogeological factors.'}
-            </p>
+            {loadingML ? (
+              <div className="animate-pulse space-y-2 mt-2">
+                <div className="h-8 bg-slate-200 rounded w-48"></div>
+                <div className="h-4 bg-slate-200 rounded w-64"></div>
+              </div>
+            ) : (
+              <>
+                <p className={`text-2xl font-black mt-1 ${
+                  mlRecommendResult?.config === 'Storage-Only'
+                    ? 'text-sky-700'
+                    : mlRecommendResult?.config === 'Borewell-Recharge'
+                    ? 'text-emerald-700'
+                    : 'text-indigo-700'
+                }`}>
+                  {mlRecommendResult?.config || 'Calculating...'}
+                </p>
+                <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+                  {mlRecommendResult?.plain_language || 'Analyzing hydrogeological and site inputs...'}
+                </p>
+              </>
+            )}
           </div>
 
           <div className="p-5 rounded-xl bg-slate-50 border border-slate-200">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">SHAP Feature Drivers</p>
-            {mlRecommendResult?.shap_values && mlRecommendResult.shap_values.length > 0 ? (
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+              {mlRecommendResult?.safety_triggered ? 'Physical Safety Constraint' : 'SHAP Feature Drivers'}
+            </p>
+            {loadingML ? (
+              <div className="animate-pulse space-y-2 mt-3">
+                <div className="h-4 bg-slate-200 rounded w-full"></div>
+                <div className="h-4 bg-slate-200 rounded w-3/4"></div>
+              </div>
+            ) : mlRecommendResult?.safety_triggered ? (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 leading-relaxed">
+                <span className="font-bold flex items-center gap-1 mb-1">
+                  <ShieldAlert size={14} className="text-amber-600" /> Physical Hydrogeological Limit:
+                </span>
+                {mlRecommendResult.safety_reason}
+              </div>
+            ) : mlRecommendResult?.shap_values && mlRecommendResult.shap_values.length > 0 ? (
               <div className="space-y-2">
                 {mlRecommendResult.shap_values.slice(0, 3).map((item, i) => (
                   <div key={i} className="flex justify-between items-center text-xs">
@@ -483,14 +1254,31 @@ export default function ROIDashboard() {
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-slate-400 italic">Tier 1 Safety Gate forced Storage-Only due to physical hydrogeological constraints.</p>
+              <p className="text-xs text-slate-400 italic">No feature attribution available.</p>
             )}
           </div>
         </div>
+        <div className="mt-5 rounded-xl bg-indigo-50 border border-indigo-100 p-4">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-800 mb-2">
+            Why this recommendation?
+          </h3>
+          {mlRecommendResult?.safety_triggered ? (
+            <p className="text-sm text-indigo-900 leading-relaxed">
+              The recommendation is constrained by a physical safety rule: {mlRecommendResult.safety_reason}
+            </p>
+          ) : mlRecommendResult?.shap_values?.length ? (
+            <ul className="list-disc pl-5 space-y-1 text-sm text-indigo-900">
+              {mlRecommendResult.shap_values.slice(0, 3).map((item) => (
+                <li key={`reason-${item.feature}`}>
+                  {item.shap >= 0 ? '+' : '-'} {featureLabels[item.feature] || item.feature}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-indigo-900">The model is still evaluating the site inputs.</p>
+          )}
+        </div>
       </div>
-
-      {/* Capex Sensitivity Slider */}
-      <CapexSlider value={capexRatePerSqm} onChange={setCapexRatePerSqm} />
 
       {/* ─── 1,000-Scenario Monte Carlo Payback Chart ─── */}
       <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
@@ -504,21 +1292,97 @@ export default function ROIDashboard() {
           </p>
         </div>
 
-        <MonteCarloChart probData={monteCarloResult?.prob_breakeven_by_year} />
+        {/* is_site_specific is the stable contract; scenarios_used remains diagnostic metadata. */}
+        {monteCarloResult?.is_site_specific === false && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Monte Carlo is using a generic Thane-like rainfall fallback because the
+            percentile dataset is unavailable. These results are not site-specific
+            calibrated estimates.
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+          {[
+            ['Best case', monteCarloResult?.percentiles?.p10, 'text-emerald-700'],
+            ['Typical case', monteCarloResult?.median_breakeven_year, 'text-blue-700'],
+            ['Conservative', monteCarloResult?.percentiles?.p90, 'text-amber-700'],
+            ['No break-even risk', monteCarloResult ? `${monteCarloResult.never_break_even_pct}%` : '—', 'text-red-700'],
+          ].map(([label, value, color]) => (
+            <div key={label} className="rounded-xl bg-slate-50 border border-slate-100 p-3">
+              <p className="text-xs text-slate-500">{label}</p>
+              <p className={`text-lg font-extrabold mt-1 ${color}`}>
+                {value == null ? '—' : label === 'No break-even risk' ? value : `Year ${value}`}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {monteCarloResult ? (
+          <MonteCarloChart probData={monteCarloResult.prob_breakeven_by_year} />
+        ) : (
+          <div className="h-56 flex items-center justify-center text-slate-400 bg-slate-50 rounded-xl border border-slate-100 text-sm">
+            {loadingML ? 'Simulating 1,000 variance scenarios...' : 'Monte Carlo data unavailable'}
+          </div>
+        )}
       </div>
 
-      {/* 10-Year What-If Scenario Comparator */}
+      <ImplementationPlan
+        payback={currentPayback}
+        recommendedConfiguration={mlRecommendResult?.config || 'pending'}
+      />
+
+      {/* Long-horizon What-If Scenario Comparator */}
       <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
         <div className="mb-5 flex flex-wrap justify-between items-start gap-3">
           <div>
-            <h2 className="text-base font-semibold text-slate-900">10-Year Water Cost Trajectories</h2>
+            <h2 className="text-base font-semibold text-slate-900">{ROI_HORIZON_YEARS}-Year Water Cost Trajectories</h2>
             <p className="text-xs text-slate-500 mt-1">
               Overlaid trajectory comparison of non-RWH water expenditures vs. RWH investment.
             </p>
           </div>
         </div>
 
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {SCENARIOS.map((scenario) => {
+            const scenarioPayback = breakEvens[scenario.key] || `> ${ROI_HORIZON_YEARS} Yrs`;
+            const savingsRow = chartData[DISPLAYED_SAVINGS_YEARS - 1];
+            const savingsWithRwh = savingsRow
+              ? Number(savingsRow[`withRWH${scenario.key === 'current' ? 'Current' : scenario.key === 'conservative' ? 'Conservative' : 'HighRisk'}`])
+              : 0;
+            const scenarioNetBenefit = savingsRow
+              ? Number(savingsRow[scenario.key]) - savingsWithRwh
+              : 0;
+            return (
+              <div key={scenario.key} className="rounded-xl border p-4" style={{ borderColor: scenario.color }}>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="font-bold text-slate-800">{scenario.label}</h3>
+                  <span className="text-xs font-bold px-2 py-1 rounded-full bg-slate-100" style={{ color: scenario.color }}>
+                    {(scenario.gamma * 100).toFixed(0)}% inflation
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+                  <div>
+                    <p className="text-xs text-slate-500">Payback</p>
+                    <p className="font-extrabold text-slate-800 mt-1">{scenarioPayback}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">10-year net benefit</p>
+                    <p className={`font-extrabold mt-1 ${scenarioNetBenefit >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                      ₹{scenarioNetBenefit.toFixed(2)} L
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
         <BreakEvenChart chartData={chartData} breakEvens={breakEvens} />
+        <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+          The project reaches break-even when cumulative spending with RWH becomes lower than
+          continuing tanker and municipal purchases. Dashed markers show the expected break-even
+          year for each inflation scenario.
+        </p>
       </div>
     </div>
   );

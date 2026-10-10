@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronRight, Building2, Zap, Plus, Trash2, Droplets, TrendingUp, Calculator } from 'lucide-react';
 import { useWaterWallet } from '../context/WaterWalletContext';
-import { fetchSocietyBaseline, createSociety, getSociety, updateSociety, saveBillingEntries } from '../api/waterwallet';
+import { fetchSocietyBaseline, createSociety, getSociety, getSocietyFromDatabase, updateSociety, saveBillingEntries, fetchSocieties, fetchDatabaseSocieties } from '../api/waterwallet';
 import {
   IS_LPCD,
   UFW_LOSS_FACTOR,
@@ -21,7 +21,8 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-const YEARS = ['2023', '2024', '2025'];
+const currentYear = new Date().getFullYear();
+const YEARS = Array.from({ length: 4 }, (_, i) => String(currentYear - i));
 
 // ─── Pre-filled dummy billing rows (summer months showing high tanker usage)
 const defaultBillingRows = [
@@ -64,6 +65,7 @@ export default function VirtualMeter() {
     setOccupants: setCtxOccupants,
     setTotalTankerSpend,
     setTotalMunicipal,
+    setTotalTankerVolume,
     setBillingMonths,
     setAnnualDemand,
     societyName: ctxSocietyName,
@@ -82,11 +84,22 @@ export default function VirtualMeter() {
   const [meteredFrequency, setMeteredFrequency] = useState('Quarterly');
   const [meteredConsumption, setMeteredConsumption] = useState('');
   const [meteredBill, setMeteredBill] = useState('');
+  const [meteredTankerVolume, setMeteredTankerVolume] = useState('');
 
   // ── Database states
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState(null);
+  
+  // ── Load Society state
+  const [savedSocieties, setSavedSocieties] = useState([]);
+
+  useEffect(() => {
+    fetchDatabaseSocieties()
+      .catch(() => fetchSocieties())
+      .then((data) => setSavedSocieties(data))
+      .catch((err) => console.error("Error loading saved societies", err));
+  }, []);
 
   // ── Card 2 state
   const [billingRows, setBillingRows] = useState(defaultBillingRows);
@@ -161,19 +174,21 @@ export default function VirtualMeter() {
       const annualisedTanker = (totalTankerSpend / tankerMonths) * 12;
       setTotalTankerSpend(annualisedTanker);
       setTotalMunicipal(Number(meteredBill || 0) * m);
+      setTotalTankerVolume(Number(meteredTankerVolume || 0) * m);
       setBillingMonths(12);
       setAnnualDemand(Number(meteredConsumption || 0) * m);
     } else {
       setTotalTankerSpend(totalTankerSpend);
       setTotalMunicipal(totalMunicipal);
+      setTotalTankerVolume(totalTankerVolume);
       setBillingMonths(billingRows.length || 1);
       setAnnualDemand(backendDemand);
     }
   }, [
     societyName, flats, occupants, pincode, roofSurfaceType, totalTankerSpend, totalMunicipal,
     billingRows.length, backendDemand, useMeteredData,
-    meteredFrequency, meteredConsumption, meteredBill,
-    setAnnualDemand, setBillingMonths, setCtxFlats, setCtxOccupants, setCtxPincode, setCtxRoofSurfaceType, setCtxSocietyName, setTotalMunicipal, setTotalTankerSpend
+    meteredFrequency, meteredConsumption, meteredBill, meteredTankerVolume, totalTankerVolume,
+    setAnnualDemand, setBillingMonths, setCtxFlats, setCtxOccupants, setCtxPincode, setCtxRoofSurfaceType, setCtxSocietyName, setTotalMunicipal, setTotalTankerSpend, setTotalTankerVolume
   ]);
 
   // ── Row handlers
@@ -193,7 +208,13 @@ export default function VirtualMeter() {
   useEffect(() => {
     if (societyId) {
       setIsLoading(true);
-      getSociety(societyId)
+      getSocietyFromDatabase(societyId)
+        .catch((error) => {
+          if (error.response?.status !== 404) {
+            throw error;
+          }
+          return getSociety(societyId);
+        })
         .then((data) => {
           setSocietyName(data.name);
           setFlats(data.num_flats);
@@ -290,6 +311,22 @@ export default function VirtualMeter() {
             <h2 className="text-base font-semibold text-slate-900">Society Baseline Data</h2>
             <p className="text-xs text-slate-500">Configure your society's parameters to calculate baseline water demand</p>
           </div>
+          
+          {savedSocieties.length > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Load Saved:</label>
+              <select
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                value={societyId || ""}
+                onChange={(e) => setSocietyId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">-- New Society --</option>
+                {savedSocieties.map(soc => (
+                  <option key={soc.id} value={soc.id}>{soc.name} ({soc.pincode})</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -424,7 +461,7 @@ export default function VirtualMeter() {
               </div>
               
               {useMeteredData && (
-                <div className="px-5 py-5 border-t border-slate-200 bg-blue-50/50 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="px-5 py-5 border-t border-slate-200 bg-blue-50/50 grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Bill Frequency</label>
                     <select value={meteredFrequency} onChange={(e) => setMeteredFrequency(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -441,6 +478,10 @@ export default function VirtualMeter() {
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Municipal Bill (₹)</label>
                     <input type="number" min="0" value={meteredBill} onChange={(e) => setMeteredBill(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 45000" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">Tanker Volume (L)</label>
+                    <input type="number" min="0" value={meteredTankerVolume} onChange={(e) => setMeteredTankerVolume(e.target.value)} className="w-full border border-blue-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-blue-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Optional" />
                   </div>
                 </div>
               )}

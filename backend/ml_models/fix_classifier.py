@@ -45,19 +45,20 @@ np.random.seed(42)
 N = 600
 
 def classify_rwh(row):
-    coastal    = row["coastal_km"] < 3
+    coastal    = row["coastal_km"] <= 2.5
     has_bw     = row["borewell"] == 1
-    deep_bw    = row["borewell_depth"] > 80
-    good_soil  = row["soil_perm"] >= 3
-    large_roof = row["rooftop_area"] > 600
-    if coastal: return "Storage-Only"
-    if has_bw and good_soil and large_roof: return "Hybrid"
-    if has_bw and deep_bw and good_soil: return "Borewell-Recharge"
-    if has_bw and large_roof: return "Hybrid"
-    return "Storage-Only"
+    deep_bw    = row["borewell_depth"] >= 30.0
+    good_soil  = row["soil_perm"] >= 2
+    large_roof = row["rooftop_area"] >= 500.0
+
+    if coastal or not has_bw or not deep_bw or not good_soil:
+        return "Storage-Only"
+    if large_roof:
+        return "Hybrid"
+    return "Borewell-Recharge"
 
 bw  = np.random.choice([0,1], N, p=[0.40,0.60])
-bwd = np.where(bw, np.random.randint(30,200,N), 0).astype(float)
+bwd = np.where(bw, np.random.randint(35,180,N), 0).astype(float)
 
 df = pd.DataFrame({
     "rooftop_area":   np.random.randint(150,1800,N).astype(float),

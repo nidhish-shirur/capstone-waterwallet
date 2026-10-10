@@ -55,7 +55,11 @@ def run_monte_carlo(
     rooftop_area_m2: float,
     monthly_demand_kl: float,
     capex_inr: float,
+    tank_capacity_litres: float = 50000,
+    rainfall_reduction_percent: float = 0,
     tanker_rate_per_kl: float = TANKER_COST_PER_KL,
+    annual_tanker_volume_litres: float = 0,
+    water_tariff_per_kl: float = 15.0,
     inflation_rate: float = INFLATION_RATE,
     n_scenarios: int = N_SCENARIOS,
     percentile_csv_path: Optional[str] = None,
@@ -92,6 +96,7 @@ def run_monte_carlo(
           "n_scenarios": int,
           "never_break_even_pct": float,
           "scenarios_used": "percentile_table" | "fallback_uniform",
+          "is_site_specific": bool,
         }
     """
     percentile_table = _load_percentile_table(percentile_csv_path)
@@ -132,19 +137,33 @@ def run_monte_carlo(
             * runoff_coeff
             / 1000.0
         )
+        monthly_yield_kl *= 1 - (rainfall_reduction_percent / 100.0)
 
         # ── Demand-gate ────────────────────────────────────────────────────
         monthly_usable_kl = np.minimum(monthly_yield_kl, monthly_demand_kl)
+        # Storage can turn over repeatedly during the year. Do not apply an
+        # arbitrary tank-capacity multiplier to annual harvested water.
         annual_usable_kl  = monthly_usable_kl.sum()
 
         # ── 10-year ROI loop ───────────────────────────────────────────────
-        annual_opex   = capex_inr * AMC_RATE
-        first_yr_sav  = annual_usable_kl * tanker_rate_per_kl
+        annual_opex = capex_inr * AMC_RATE
+        annual_demand_litres = monthly_demand_kl * 1000 * 12
+        offset_tanker_kl = min(annual_usable_kl, annual_tanker_volume_litres / 1000.0)
+        offset_municipal_kl = min(
+            max(0.0, annual_usable_kl - offset_tanker_kl),
+            max(0.0, annual_demand_litres - annual_tanker_volume_litres) / 1000.0,
+        )
+        first_yr_tanker_sav = offset_tanker_kl * tanker_rate_per_kl
+        first_yr_municipal_sav = offset_municipal_kl * water_tariff_per_kl
         cumulative    = -capex_inr
         breakeven     = None
 
         for yr in range(1, ROI_YEARS + 1):
-            net = first_yr_sav * (1 + inflation_rate) ** (yr - 1) - annual_opex
+            gross_savings = (
+                first_yr_tanker_sav * (1 + inflation_rate) ** (yr - 1)
+                + first_yr_municipal_sav * (1.05 ** (yr - 1))
+            )
+            net = gross_savings - annual_opex
             cumulative += net
             if breakeven is None and cumulative >= 0:
                 breakeven = yr
@@ -177,4 +196,7 @@ def run_monte_carlo(
         "never_break_even_pct":  round(float((~valid_mask).mean()) * 100, 1),
         "scenarios_used":        "percentile_table" if percentile_table is not None
                                  else "fallback_uniform",
+        # Stable frontend contract; scenarios_used remains for diagnostics and
+        # backwards compatibility with existing API consumers.
+        "is_site_specific":       percentile_table is not None,
     }
