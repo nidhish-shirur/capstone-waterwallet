@@ -87,7 +87,7 @@ export const simulateROI = (payload) =>
 
 /**
  * Runs 1,000-scenario Monte Carlo ROI simulation.
- * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, tank_capacity_litres?: number, rainfall_reduction_percent?: number, tanker_rate_per_kl?: number, annual_tanker_volume_litres?: number, water_tariff_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
+ * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, monthly_rainfall_mm?: number[], tank_capacity_litres?: number, rainfall_reduction_percent?: number, tanker_rate_per_kl?: number, annual_tanker_volume_litres?: number, water_tariff_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
  * @returns {Promise<{ median_breakeven_year: number, prob_breakeven_by_year: object, percentiles: object, n_scenarios: number, never_break_even_pct: number, scenarios_used: string, is_site_specific: boolean }>}
  */
 export const runMonteCarlo = (payload) =>
@@ -183,6 +183,9 @@ export const saveBillingEntries = (id, payload) =>
  */
 export const saveSocietyAnalysis = (id, payload) =>
   api.post(`/api/societies/${id}/analyses`, payload).then((r) => r.data);
+
+export const getLatestSocietyAnalysis = (id) =>
+  api.get(`/api/societies/${id}/analyses/latest`).then((r) => r.data);
 
 /**
  * Gets all societies for the current user.

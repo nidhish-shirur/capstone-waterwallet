@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback, memo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Cloud, Maximize2, Droplets, Landmark, ChevronRight, Trash2,
@@ -145,8 +145,10 @@ export default function MapStudio() {
     setEstimatedCapex,
     setAnnualYield,
     setMonthlyRainfall,
+    setGrossRoofArea,
     setSiteLatitude,
     setSiteLongitude,
+    setRainfallSource,
     monthlyDemand,
     roofSurfaceType,
     borewell, setBorewell,
@@ -160,7 +162,9 @@ export default function MapStudio() {
   const [monthlyMm, setMonthlyMm] = useState(Array(12).fill(0));
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState(false);
-  const [rainfallSource, setRainfallSource] = useState(null);
+  const [forecastAnnualRainfall, setForecastAnnualRainfall] = useState(null);
+  const [historicalPeriod, setHistoricalPeriod] = useState(null);
+  const rainfallRequestId = useRef(0);
 
   const effectiveRainfall = annualRainfall || 0;
 
@@ -207,60 +211,107 @@ export default function MapStudio() {
 
   // ─── Fetch rainfall data dynamically from backend based on centroid coordinates
   useEffect(() => {
+    const requestId = ++rainfallRequestId.current;
+
     if (!centroid || tracedArea <= 0) {
+      // Resetting request state when the selected catchment is cleared is
+      // intentional; these values are derived from an external API request.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBackendYield(0);
       setMlYieldSource(null);
       setMlYieldDeviation(null);
-      setRainfallSource(null);
+      setForecastAnnualRainfall(null);
+      setHistoricalPeriod(null);
       setAnnualRainfall(null);
       setMonthlyMm(Array(12).fill(0));
+      setGrossRoofArea(0);
+      setRainfallSource('seed');
       setWeatherLoading(false);
       return;
     }
 
     setWeatherLoading(true);
     setWeatherError(false);
+    setAnnualRainfall(null);
+    setMonthlyMm(Array(12).fill(0));
+    setForecastAnnualRainfall(null);
+    setHistoricalPeriod(null);
     const catchmentPayload = {
-      latitude: centroid[1],
-      longitude: centroid[0],
+      latitude: centroid[0],
+      longitude: centroid[1],
       roof_area_sqm: tracedArea,
       roof_surface_type: roofSurfaceType,
     };
 
     fetchCatchmentData(catchmentPayload)
-      .then((historicalData) =>
-        fetchRainfallForecast(catchmentPayload)
-          .then((forecastData) => ({ data: forecastData, source: forecastData.source }))
-          .catch((forecastError) => {
-            console.warn('Auto-SARIMA forecast unavailable; using historical rainfall average.', forecastError);
-            return { data: historicalData, source: 'historical_average' };
-          })
-      )
-      .then(({ data, source }) => {
-        setRainfallSource(source);
-        setAnnualRainfall(data.annual_rainfall_mm);
-        setMonthlyMm(data.monthly_rainfall_mm);
-        setMonthlyRainfall(data.monthly_rainfall_mm);
-        setBackendYield(data.annual_yield_litres);
-        
-        return getMLYield({
-          rooftop_area_m2: tracedArea,
-          monthly_rainfall_mm: data.monthly_rainfall_mm
-        });
+      .then((historicalData) => {
+        if (requestId !== rainfallRequestId.current) return null;
+
+        // The historical climatological normal is the authoritative planning
+        // baseline. A forecast is a scenario, not a replacement for the
+        // long-run annual rainfall used for yield calculations.
+        setAnnualRainfall(historicalData.annual_rainfall_mm);
+        setMonthlyMm(historicalData.monthly_rainfall_mm);
+        setMonthlyRainfall(historicalData.monthly_rainfall_mm);
+        setGrossRoofArea(tracedArea);
+        setRainfallSource('phase2_historical');
+        setBackendYield(historicalData.annual_yield_litres);
+        setHistoricalPeriod(
+          `${historicalData.historical_start_year}–${historicalData.historical_end_year}`,
+        );
+
+        // Historical rainfall is authoritative. ML yield and forecasting are
+        // optional enrichments and must not turn a successful rainfall load
+        // into a false "rainfall unavailable" state.
+        setWeatherLoading(false);
+        return Promise.allSettled([
+          getMLYield({
+            rooftop_area_m2: tracedArea,
+            monthly_rainfall_mm: historicalData.monthly_rainfall_mm,
+          }),
+          fetchRainfallForecast(catchmentPayload),
+        ]);
       })
-      .then((mlData) => {
-        setMlYieldSource(mlData.source);
-        setMlYieldDeviation(mlData.ml_deviation_percent);
+      .then((results) => {
+        if (!results || requestId !== rainfallRequestId.current) return null;
+        const [mlResult, forecastResult] = results;
+
+        if (mlResult.status === 'fulfilled') {
+          return {
+            mlData: mlResult.value,
+            forecastData: forecastResult.status === 'fulfilled' ? forecastResult.value : null,
+          };
+        }
+        console.warn('ML yield unavailable; retaining physics-based rainfall yield.', mlResult.reason);
+        return {
+          mlData: null,
+          forecastData: forecastResult.status === 'fulfilled' ? forecastResult.value : null,
+        };
+      })
+      .then((result) => {
+        if (!result || requestId !== rainfallRequestId.current) return;
+
+        if (result.forecastData) {
+          setForecastAnnualRainfall(result.forecastData.annual_rainfall_mm);
+        } else {
+          console.warn('Auto-SARIMA forecast unavailable; retaining historical rainfall baseline.');
+        }
+        if (result.mlData) {
+          setMlYieldSource(result.mlData.source);
+          setMlYieldDeviation(result.mlData.ml_deviation_percent);
+        }
         setWeatherLoading(false);
       })
       .catch((err) => {
+        if (requestId !== rainfallRequestId.current) return;
+
         console.error("Backend calculation error:", err);
         setWeatherError(true);
         setWeatherLoading(false);
       });
-    setSiteLatitude(centroid[1]);
-    setSiteLongitude(centroid[0]);
-  }, [centroid, tracedArea, roofSurfaceType, setMonthlyRainfall, setSiteLatitude, setSiteLongitude]);
+    setSiteLatitude(centroid[0]);
+    setSiteLongitude(centroid[1]);
+  }, [centroid, tracedArea, roofSurfaceType, setGrossRoofArea, setMonthlyRainfall, setRainfallSource, setSiteLatitude, setSiteLongitude]);
 
   // ─── Monsoon dependency score ─────────────────────────────────────────────
   const monsoonPct = useMemo(() => {
@@ -275,27 +326,30 @@ export default function MapStudio() {
     if (estimatedCapex > 0) {
       setEstimatedCapex(estimatedCapex);
     }
+    if (tracedArea > 0) {
+      setGrossRoofArea(tracedArea);
+    }
     if (backendYield > 0 || maxYield > 0) {
       setAnnualYield(backendYield || maxYield);
     }
     if (monthlyMm && monthlyMm.some(v => v > 0)) {
       setMonthlyRainfall(monthlyMm);
     }
-  }, [estimatedCapex, backendYield, maxYield, monthlyMm]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [estimatedCapex, backendYield, maxYield, monthlyMm, tracedArea]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── KPI sidebar cards ─────────────────────────────────────────────────────
   const liveMetrics = [
     {
       icon: Cloud,
-      label: 'Live Rainfall Data',
+      label: 'Rainfall Planning Baseline',
       value: weatherLoading ? 'Fetching…' : formatRainfall(effectiveRainfall),
       unit: weatherError
         ? 'Rainfall unavailable'
         : annualRainfall == null
         ? 'Trace a valid roof polygon to fetch rainfall'
-        : rainfallSource === 'auto_sarima'
-        ? '12-month Auto-SARIMA forecast · Open-Meteo history'
-        : '15-year average (2010–2024) · Open-Meteo',
+        : forecastAnnualRainfall == null
+        ? `${historicalPeriod || '15-year historical normal'} · Open-Meteo`
+        : `${historicalPeriod || '15-year historical normal'} · next 12-month forecast ${formatRainfall(forecastAnnualRainfall)}`,
       color: 'text-blue-600', bg: 'bg-blue-50', highlight: false,
     },
     {
@@ -322,15 +376,25 @@ export default function MapStudio() {
   const hasMonsoonData = monthlyMm.some((v) => v > 0);
 
   return (
-    <div className="p-8">
-      <div className="flex gap-6 h-full">
+    <div className="page-content p-4 sm:p-6 lg:p-8">
+      <div className="mb-6 rounded-2xl border border-teal-100 bg-gradient-to-br from-teal-700 to-blue-900 px-5 py-5 text-white shadow-md sm:px-6">
+        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-teal-100">Turn the roof into evidence</p>
+        <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight sm:text-2xl">Trace your catchment and test its potential</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-relaxed text-teal-50">Map the roof once. WaterWallet combines its area, rainfall, and surface type into a transparent yield estimate.</p>
+          </div>
+          <span className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-teal-50">2 of 3 · Catchment audit</span>
+        </div>
+      </div>
+      <div className="grid min-h-0 gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.85fr)]">
 
         {/* ── Left: Live Leaflet Map (60%) ── */}
-        <div className="flex-1" style={{ flex: '0 0 60%' }}>
-          <div className="bg-white rounded-2xl shadow-md p-4 h-full min-h-[400px] flex flex-col">
+        <div className="min-w-0">
+          <div className="ww-card p-3 sm:p-4 h-full min-h-[520px] flex flex-col">
 
             {/* Map header */}
-            <div className="flex items-center justify-between mb-4 px-2">
+            <div className="flex flex-col gap-3 mb-4 px-1 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Interactive Catchment Map</h2>
                 <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
@@ -347,14 +411,14 @@ export default function MapStudio() {
                 )}
                 {points.length > 0 && (
                   <div className="flex items-center gap-1.5">
-                    <button
+                    <button aria-label="Undo last rooftop point"
                       onClick={undoPoint}
                       className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-xl transition-colors"
                     >
                       <Undo size={12} />
                       Undo
                     </button>
-                    <button
+                    <button aria-label="Clear rooftop trace"
                       onClick={clearPoints}
                       className="flex items-center gap-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1.5 rounded-xl transition-colors"
                     >
@@ -370,7 +434,7 @@ export default function MapStudio() {
             </div>
 
             {/* Leaflet Map */}
-            <div className="flex-1 rounded-xl overflow-hidden min-h-[400px] relative">
+            <div className="flex-1 rounded-xl overflow-hidden min-h-[360px] sm:min-h-[460px] relative">
               <div className="absolute inset-0">
                 <MapContainer
                   center={THANE_CENTER}
@@ -406,7 +470,7 @@ export default function MapStudio() {
 
             {/* Instruction strip below map */}
             {!canTrace && (
-              <div className="mt-3 px-2 py-2.5 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-700 font-medium text-center">
+              <div role="status" aria-live="polite" className="mt-3 px-2 py-2.5 bg-blue-50 border border-blue-100 rounded-xl text-xs text-blue-700 font-medium text-center">
                 {points.length === 0
                   ? '📍 Click anywhere on the satellite map to start tracing your rooftop boundary'
                   : `📍 ${3 - points.length} more click${3 - points.length > 1 ? 's' : ''} needed to form a polygon`}
@@ -416,7 +480,7 @@ export default function MapStudio() {
         </div>
 
         {/* ── Right: Live Calculation Sidebar (40%) ── */}
-        <div className="space-y-4 flex flex-col" style={{ flex: '0 0 40%' }}>
+        <div className="space-y-4 flex flex-col min-w-0">
           <h2 className="text-base font-semibold text-slate-900 px-1">Live Calculations</h2>
 
           <div className="grid grid-cols-2 gap-4">
@@ -425,7 +489,7 @@ export default function MapStudio() {
               return (
                 <div
                   key={idx}
-                  className={`bg-white rounded-2xl shadow-md p-4 transition-all ${
+                  className={`ww-card p-4 transition-all ${
                     m.highlight
                       ? 'border-2 border-blue-500 shadow-blue-100 shadow-sm'
                       : 'border border-slate-100'
@@ -455,7 +519,7 @@ export default function MapStudio() {
 
           {/* ── Feature 4: Monthly Rainfall vs Demand Chart ── */}
           {hasMonsoonData && (
-            <div className="bg-white rounded-2xl shadow-md p-4 border border-slate-100">
+            <div className="ww-card p-4">
               <p className="text-xs font-semibold text-slate-700 mb-1">Seasonal Rainfall vs Demand</p>
               <p className="text-xs text-slate-400 mb-3">
                 15-yr avg · <span className="text-blue-600 font-medium">Blue = monsoon months</span>
@@ -492,8 +556,14 @@ export default function MapStudio() {
           )}
           
           {/* ── ML Site Inputs ── */}
-          <div className="bg-white rounded-2xl shadow-md p-4 border border-slate-100">
-            <p className="text-xs font-semibold text-slate-700 mb-3">Site Conditions (for ML Models)</p>
+          <div className="ww-card p-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold text-slate-700">Site Conditions</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-400">Optional assumptions used to explain the recommended configuration.</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">Model inputs</span>
+          </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label className="block text-[10px] font-bold text-slate-500 uppercase">Existing Borewells</label>
@@ -530,7 +600,7 @@ export default function MapStudio() {
           {/* Proceed Button */}
           <button
             onClick={() => navigate('/roi-dashboard')}
-            className="flex items-center justify-center gap-2 w-full bg-blue-700 hover:bg-blue-800 text-white font-semibold px-6 py-3.5 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 text-sm mt-2"
+            className="ww-primary-button flex items-center justify-center gap-2 w-full px-6 py-3.5 text-sm mt-2"
           >
             Generate 10-Year ROI Simulation
             <ChevronRight size={16} />

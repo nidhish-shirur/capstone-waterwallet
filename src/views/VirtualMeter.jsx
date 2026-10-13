@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronRight, Building2, Zap, Plus, Trash2, Droplets, TrendingUp, Calculator } from 'lucide-react';
 import { useWaterWallet } from '../context/WaterWalletContext';
-import { fetchSocietyBaseline, createSociety, getSociety, getSocietyFromDatabase, updateSociety, saveBillingEntries, fetchSocieties, fetchDatabaseSocieties } from '../api/waterwallet';
+import { fetchSocietyBaseline, createSociety, getSociety, getSocietyFromDatabase, getLatestSocietyAnalysis, updateSociety, saveBillingEntries, fetchSocieties, fetchDatabaseSocieties } from '../api/waterwallet';
 import {
   IS_LPCD,
   UFW_LOSS_FACTOR,
@@ -35,10 +35,10 @@ const defaultBillingRows = [
 ];
 
 // ─── Toggle Switch ──────────────────────────────────────────────────────────
-function ToggleSwitch({ checked, onChange }) {
+function ToggleSwitch({ checked, onChange, label }) {
   return (
-    <label className="toggle-switch">
-      <input type="checkbox" checked={checked} onChange={onChange} />
+    <label className="toggle-switch" aria-label={label}>
+      <input type="checkbox" checked={checked} onChange={onChange} aria-label={label} />
       <span className="toggle-slider"></span>
     </label>
   );
@@ -68,6 +68,12 @@ export default function VirtualMeter() {
     setTotalTankerVolume,
     setBillingMonths,
     setAnnualDemand,
+    setEstimatedCapex,
+    setAnnualYield,
+    setMonthlyRainfall,
+    setGrossRoofArea,
+    setSiteLatitude,
+    setSiteLongitude,
     societyName: ctxSocietyName,
     flats: ctxFlats,
     occupants: ctxOccupants,
@@ -118,13 +124,6 @@ export default function VirtualMeter() {
       includeLosses,
     });
   }, [flats, occupants, includeLosses]);
-
-  // Derived: effective percentage multiplier applied before the peak buffer.
-  // The canonical formula compounds the percentages: (1 + UFW_LOSS_FACTOR)
-  const effectivePercentage = useMemo(() => {
-    const ufwMultiplier = includeLosses ? (1 + UFW_LOSS_FACTOR) : 1;
-    return (ufwMultiplier - 1) * 100;
-  }, [includeLosses]);
 
   // ── Billing totals
   const { totalTankerSpend, totalMunicipal, avgMonthly, totalTankerVolume } = useMemo(() => {
@@ -210,7 +209,7 @@ export default function VirtualMeter() {
       setIsLoading(true);
       getSocietyFromDatabase(societyId)
         .catch((error) => {
-          if (error.response?.status !== 404) {
+        if (![404, 503].includes(error.response?.status)) {
             throw error;
           }
           return getSociety(societyId);
@@ -236,6 +235,23 @@ export default function VirtualMeter() {
             setBillingRows(mappedRows);
           }
         })
+        .then(() => getLatestSocietyAnalysis(societyId).catch((error) => {
+          if (error.response?.status === 404) return null;
+          throw error;
+        }))
+        .then((analysis) => {
+          if (!analysis) return;
+          if (analysis.estimated_capex != null) setEstimatedCapex(analysis.estimated_capex);
+          if (analysis.annual_yield_l != null) setAnnualYield(analysis.annual_yield_l);
+          if (analysis.annual_demand_l != null) setAnnualDemand(analysis.annual_demand_l);
+          const computed = analysis.computed_data || {};
+          if (computed.gross_roof_area_sqm > 0) setGrossRoofArea(computed.gross_roof_area_sqm);
+          if (Array.isArray(computed.monthly_rainfall_mm) && computed.monthly_rainfall_mm.length === 12) {
+            setMonthlyRainfall(computed.monthly_rainfall_mm);
+          }
+          if (Number.isFinite(computed.site_latitude)) setSiteLatitude(computed.site_latitude);
+          if (Number.isFinite(computed.site_longitude)) setSiteLongitude(computed.site_longitude);
+        })
         .catch((err) => {
           console.error("Error loading society:", err);
         })
@@ -243,7 +259,7 @@ export default function VirtualMeter() {
           setIsLoading(false);
         });
     }
-  }, [societyId]);
+  }, [societyId, setAnnualDemand, setAnnualYield, setEstimatedCapex, setGrossRoofArea, setMonthlyRainfall, setSiteLatitude, setSiteLongitude]);
 
   // ── Save/Update society data and billing rows ──
   const handleSave = async () => {
@@ -291,10 +307,20 @@ export default function VirtualMeter() {
   };
 
   return (
-    <div className="p-8 space-y-6">
+    <div className="page-content p-4 sm:p-6 lg:p-8 space-y-6">
+      <div className="ww-page-intro rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-700 to-blue-900 px-5 py-5 text-white shadow-md sm:px-6">
+        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-blue-100">Start with the baseline</p>
+        <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-xl font-bold tracking-tight sm:text-2xl">Describe your society’s water demand</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-relaxed text-blue-100">Use planning assumptions or your own bills. WaterWallet carries these inputs into the rooftop and return analysis.</p>
+          </div>
+          <span className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-blue-50">1 of 3 · Society profile</span>
+        </div>
+      </div>
 
       {/* ── Card 1: Society Baseline Data ── */}
-      <div className="bg-white rounded-2xl shadow-md p-6 relative">
+      <div className="ww-card p-4 sm:p-6 relative">
         {isLoading && (
           <div className="absolute inset-0 bg-white/75 backdrop-blur-[1px] flex items-center justify-center rounded-2xl z-10">
             <div className="flex items-center gap-2 text-blue-700 font-semibold text-sm">
@@ -303,7 +329,7 @@ export default function VirtualMeter() {
             </div>
           </div>
         )}
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex flex-col gap-4 mb-6 sm:flex-row sm:items-center">
           <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
             <Building2 size={20} className="text-blue-600" />
           </div>
@@ -313,10 +339,10 @@ export default function VirtualMeter() {
           </div>
           
           {savedSocieties.length > 0 && (
-            <div className="ml-auto flex items-center gap-2">
+            <div className="sm:ml-auto flex items-center gap-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Load Saved:</label>
               <select
-                className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+                className="ww-input border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
                 value={societyId || ""}
                 onChange={(e) => setSocietyId(e.target.value ? Number(e.target.value) : null)}
               >
@@ -338,7 +364,7 @@ export default function VirtualMeter() {
               value={societyName}
               onChange={(e) => setSocietyName(e.target.value)}
               placeholder="e.g. Evergreen Heights CHS"
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-900 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+              className="ww-input w-full px-4 py-2.5 text-sm font-medium placeholder-slate-300 bg-slate-50 transition"
             />
           </div>
 
@@ -351,7 +377,7 @@ export default function VirtualMeter() {
               onChange={(e) => setPincode(e.target.value)}
               placeholder="e.g. 400071"
               maxLength={6}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+              className="ww-input w-full px-4 py-2.5 text-sm font-semibold bg-slate-50 transition"
             />
           </div>
 
@@ -363,7 +389,7 @@ export default function VirtualMeter() {
               min={1}
               value={flats}
               onChange={(e) => setFlats(e.target.value)}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-slate-50 transition"
+              className="ww-input w-full px-4 py-2.5 text-sm font-semibold bg-slate-50 transition"
             />
           </div>
 
@@ -385,7 +411,7 @@ export default function VirtualMeter() {
             <select
               value={roofSurfaceType}
               onChange={(e) => setRoofSurfaceType(e.target.value)}
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 transition"
+              className="ww-input w-full px-4 py-2.5 text-sm font-semibold bg-slate-50 transition"
             >
               <option value="concrete">Concrete (Runoff: 0.90)</option>
               <option value="metal">Metal (Runoff: 0.90)</option>
@@ -436,7 +462,7 @@ export default function VirtualMeter() {
                 <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${includeLosses ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
                   {includeLosses ? '+15% Active' : 'Off'}
                 </span>
-                <ToggleSwitch checked={includeLosses} onChange={() => setIncludeLosses(!includeLosses)} />
+                <ToggleSwitch label="Include distribution losses" checked={includeLosses} onChange={() => setIncludeLosses(!includeLosses)} />
               </div>
             </div>
           </div>
@@ -456,7 +482,7 @@ export default function VirtualMeter() {
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${useMeteredData ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
                     {useMeteredData ? 'Active' : 'Off'}
                   </span>
-                  <ToggleSwitch checked={useMeteredData} onChange={() => setUseMeteredData(!useMeteredData)} />
+                  <ToggleSwitch label="Use actual metered data" checked={useMeteredData} onChange={() => setUseMeteredData(!useMeteredData)} />
                 </div>
               </div>
               
@@ -491,8 +517,8 @@ export default function VirtualMeter() {
       </div>
 
       {/* ── Card 2: Historical Billing Logs ── */}
-      <div className="bg-white rounded-2xl shadow-md p-6 border border-slate-100">
-        <div className="flex items-center justify-between mb-5">
+      <div className="ww-card p-4 sm:p-6">
+        <div className="flex flex-col gap-4 mb-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
               <Droplets size={20} className="text-red-500" />
@@ -504,7 +530,7 @@ export default function VirtualMeter() {
           </div>
           <button
             onClick={addRow}
-            className="flex items-center gap-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3.5 py-2 rounded-xl transition-colors"
+            className="ww-secondary-button flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs text-blue-700 transition-colors"
           >
             <Plus size={14} />
             Add Month
@@ -615,6 +641,9 @@ export default function VirtualMeter() {
                     {/* Delete */}
                     <td className="px-3 py-2">
                       <button
+                        type="button"
+                        aria-label={`Delete ${row.month} ${row.year} billing row`}
+                        title="Delete billing row"
                         onClick={() => deleteRow(row.id)}
                         className="opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all"
                       >
@@ -629,7 +658,7 @@ export default function VirtualMeter() {
         </div>
 
         {/* Summary row */}
-        <div className="mt-4 grid grid-cols-4 gap-3">
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-center">
             <p className="text-xs text-slate-500 font-medium">Total Municipal Bills</p>
             <p className="text-lg font-bold text-slate-800 mt-0.5">{fmtINR(totalMunicipal)}</p>
@@ -650,9 +679,9 @@ export default function VirtualMeter() {
       </div>
 
       {/* ── Action Buttons ── */}
-      <div className="flex justify-end items-center gap-4">
+      <div className="flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:justify-end sm:items-center">
         {saveStatus && (
-          <div className={`flex items-center text-xs font-semibold px-3 py-2 rounded-xl border ${
+          <div role="status" aria-live="polite" className={`flex items-center text-xs font-semibold px-3 py-2 rounded-xl border ${
             saveStatus.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'
           }`}>
             {saveStatus.message}
@@ -661,7 +690,7 @@ export default function VirtualMeter() {
         <button
           onClick={handleSave}
           disabled={isSaving || isLoading}
-          className="flex items-center gap-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold px-5 py-3 rounded-xl shadow-sm hover:shadow transition-all duration-200 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          className="ww-secondary-button flex items-center justify-center gap-2 px-5 py-3 text-sm disabled:opacity-50"
         >
           {isSaving ? (
             <>
@@ -674,7 +703,7 @@ export default function VirtualMeter() {
         </button>
         <button
           onClick={() => navigate('/map-studio')}
-          className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white font-semibold px-6 py-3 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 text-sm"
+          className="ww-primary-button flex items-center justify-center gap-2 px-6 py-3 text-sm"
         >
           Process Data & Continue
           <ChevronRight size={16} />

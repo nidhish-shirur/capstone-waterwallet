@@ -64,9 +64,11 @@ export function WaterWalletProvider({ children }) {
   const [annualDemand, setAnnualDemand] = useState(defaultDemandSeed);
   const defaultRainfallNormals = [1, 1, 2, 18, 110, 510, 710, 580, 300, 95, 18, 2];
   const [monthlyRainfall, setMonthlyRainfall] = useState(defaultRainfallNormals);
+  const [grossRoofArea, setGrossRoofArea] = useState(1200);
   const [capexRatePerSqm, setCapexRatePerSqm] = useState(600);
   const [siteLatitude, setSiteLatitude] = useState(19.076);
   const [siteLongitude, setSiteLongitude] = useState(72.877);
+  const [rainfallSource, setRainfallSource] = useState('seed');
 
   // ── ML Site Parameters ──
   const [borewell,        setBorewellState]   = useState(1);
@@ -107,9 +109,11 @@ export function WaterWalletProvider({ children }) {
     annualDemand,     setAnnualDemand,
     monthlyDemand,
     monthlyRainfall,  setMonthlyRainfall,
+    grossRoofArea,    setGrossRoofArea,
     capexRatePerSqm,  setCapexRatePerSqm,
     siteLatitude,     setSiteLatitude,
     siteLongitude,    setSiteLongitude,
+    rainfallSource,   setRainfallSource,
 
     // ML Site Parameters
     borewell,         setBorewell,

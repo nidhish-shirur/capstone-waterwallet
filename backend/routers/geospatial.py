@@ -6,7 +6,12 @@ from models.schemas import (
     RainfallForecastResponse,
 )
 from services.yield_engine import calculate_yield
-from services.rainfall_api import fetch_monthly_rainfall, fetch_monthly_rainfall_history
+from services.rainfall_api import (
+    RAINFALL_END_YEAR,
+    RAINFALL_START_YEAR,
+    fetch_monthly_rainfall,
+    fetch_monthly_rainfall_history,
+)
 from services.rainfall_forecast import forecast_monthly_rainfall
 
 router = APIRouter()
@@ -36,6 +41,8 @@ async def catchment_calculate(payload: CatchmentRequest) -> CatchmentResponse:
         monthly_rainfall_mm=[round(r, 2) for r in monthly_rainfall],
         annual_yield_litres=round(annual_yield, 2),
         monthly_yield_litres=[round(y, 2) for y in monthly_yield],
+        historical_start_year=RAINFALL_START_YEAR,
+        historical_end_year=RAINFALL_END_YEAR,
     )
 
 

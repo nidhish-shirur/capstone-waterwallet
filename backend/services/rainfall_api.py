@@ -1,9 +1,15 @@
+from datetime import datetime, timezone
+from math import isfinite
+
 import httpx
 
 # Open-Meteo archive API — free, no key required
 OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
-RAINFALL_START_YEAR = 2010
-RAINFALL_END_YEAR = 2024
+RAINFALL_YEARS = 15
+# Use only complete calendar years so the baseline is not distorted by a
+# partially observed current year.
+RAINFALL_END_YEAR = datetime.now(timezone.utc).year - 1
+RAINFALL_START_YEAR = RAINFALL_END_YEAR - RAINFALL_YEARS + 1
 
 
 async def fetch_monthly_rainfall(
@@ -106,6 +112,11 @@ async def fetch_daily_rainfall(
     daily = data.get("daily") or {}
     dates = daily.get("time") or []
     precipitation = daily.get("precipitation_sum") or []
+    if len(dates) != len(precipitation):
+        raise HTTPException(
+            status_code=502,
+            detail="Daily rainfall response had mismatched date and precipitation lengths.",
+        )
     years: dict[int, list[float]] = {}
     for date_str, rain in zip(dates, precipitation):
         if rain is None:
@@ -119,8 +130,13 @@ async def fetch_daily_rainfall(
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=502,
-                detail="Daily rainfall response contained a non-numeric precipitation value.",
+                detail="Daily rainfall response contained an invalid date or non-numeric precipitation value.",
             ) from exc
+        if not isfinite(value):
+            raise HTTPException(
+                status_code=502,
+                detail="Daily rainfall response contained a non-finite precipitation value.",
+            )
         if value < 0:
             raise HTTPException(
                 status_code=502,

@@ -18,7 +18,10 @@ def simulate_roi(
     Simulate a multi-year ROI for a rainwater harvesting system.
 
     Logic:
-    - Usable yield is capped by demand and tank capacity.
+    - Usable annual yield is capped by eligible demand.
+    - Tank capacity is accepted for API compatibility; monthly storage effects
+      are calculated by the Monte Carlo and tank-sizer services, which receive
+      the monthly rainfall series.
     - Yield offsets high-cost tanker water first, then municipal water.
     - Compounds tanker tariff by escalation rate and municipal tariff by 5%.
     - Subtracts 3% of installation cost as annual maintenance cost (AMC) from savings.
@@ -27,8 +30,8 @@ def simulate_roi(
     """
     annual_demand_litres = daily_demand_lpd * 365
     # The annual yield already comes from the roof/rainfall calculation.
-    # A tank can refill during the year, so `tank_capacity * 4` is not a
-    # valid annual cap and severely undercounts harvestable water.
+    # A tank can refill during the year, so applying an arbitrary multiple of
+    # tank capacity here would produce a false annual yield cap.
     effective_annual_yield = min(annual_yield_litres, annual_demand_litres)
 
     # Volumetric offsets

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { fetchCurrentUser, login as apiLogin, register as apiRegister } from '../api/waterwallet';
 
@@ -13,7 +14,7 @@ export function AuthProvider({ children }) {
       try {
         const userData = await fetchCurrentUser();
         setUser(userData);
-      } catch (error) {
+      } catch {
         localStorage.removeItem("access_token");
         setUser(null);
       }
@@ -24,6 +25,8 @@ export function AuthProvider({ children }) {
   };
 
   useEffect(() => {
+    // Authentication is an external session check whose result initializes state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     checkAuth();
     
     const handleUnauthorized = () => {

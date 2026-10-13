@@ -62,6 +62,7 @@ def run_monte_carlo(
     water_tariff_per_kl: float = 15.0,
     inflation_rate: float = INFLATION_RATE,
     n_scenarios: int = N_SCENARIOS,
+    monthly_rainfall_mm: Optional[list[float]] = None,
     percentile_csv_path: Optional[str] = None,
     usability_factor: float = 0.80,
     runoff_coeff: float = 0.90,
@@ -72,13 +73,13 @@ def run_monte_carlo(
     For each scenario:
       1. Sample monthly rainfall from U[P10, P90] for each of 12 months.
       2. Convert to monthly yield using the physics formula.
-      3. Demand-gate: usable_yield = min(yield, monthly_demand).
+      3. Demand-gate: usable_yield = min(yield, eligible non-potable monthly demand).
       4. Compute annual usable yield (KL).
       5. Run the 10-year ROI loop and find break-even year.
 
     Args:
         rooftop_area_m2:      Rooftop catchment area in m².
-        monthly_demand_kl:    Monthly water demand cap in KL.
+        monthly_demand_kl:         Monthly eligible non-potable demand cap in KL.
         capex_inr:            One-time installation cost in INR.
         tanker_rate_per_kl:   Cost of tanker water in INR/KL.
         inflation_rate:       Annual tanker price inflation rate.
@@ -99,14 +100,27 @@ def run_monte_carlo(
           "is_site_specific": bool,
         }
     """
-    percentile_table = _load_percentile_table(percentile_csv_path)
+    if monthly_rainfall_mm is not None:
+        if len(monthly_rainfall_mm) != 12 or any(value < 0 for value in monthly_rainfall_mm):
+            raise ValueError("monthly_rainfall_mm must contain 12 non-negative values.")
+        rainfall_baseline = np.asarray(monthly_rainfall_mm, dtype=float)
+        scenario_source = "phase2_monthly_rainfall"
+    else:
+        rainfall_baseline = None
+        percentile_table = _load_percentile_table(percentile_csv_path)
+        scenario_source = "percentile_table" if percentile_table is not None else "fallback_uniform"
     rng = np.random.default_rng(RNG_SEED)
 
     breakeven_years = []
 
     for _ in range(n_scenarios):
         # ── Sample 12 monthly rainfall values ──────────────────────────────
-        if percentile_table is not None:
+        if rainfall_baseline is not None:
+            monthly_rain_mm = np.array([
+                rng.uniform(max(0.0, value * 0.8), value * 1.2)
+                for value in rainfall_baseline
+            ])
+        elif percentile_table is not None:
             # Interpolate uniformly between P10 and P90 for each month
             monthly_rain_mm = np.array([
                 rng.uniform(percentile_table[m, 0], percentile_table[m, 2])
@@ -139,11 +153,21 @@ def run_monte_carlo(
         )
         monthly_yield_kl *= 1 - (rainfall_reduction_percent / 100.0)
 
-        # ── Demand-gate ────────────────────────────────────────────────────
-        monthly_usable_kl = np.minimum(monthly_yield_kl, monthly_demand_kl)
-        # Storage can turn over repeatedly during the year. Do not apply an
-        # arbitrary tank-capacity multiplier to annual harvested water.
-        annual_usable_kl  = monthly_usable_kl.sum()
+        # ── Monthly tank water balance ─────────────────────────────────────
+        # Carry storage between months so the requested tank capacity affects
+        # how much rainy-season water can serve later demand.
+        tank_level_litres = 0.0
+        monthly_demand_litres = monthly_demand_kl * 1000.0
+        annual_usable_litres = 0.0
+        for monthly_inflow_kl in monthly_yield_kl:
+            available_litres = tank_level_litres + float(monthly_inflow_kl) * 1000.0
+            served_litres = min(available_litres, monthly_demand_litres)
+            annual_usable_litres += served_litres
+            tank_level_litres = min(
+                max(0.0, available_litres - served_litres),
+                tank_capacity_litres,
+            )
+        annual_usable_kl = annual_usable_litres / 1000.0
 
         # ── 10-year ROI loop ───────────────────────────────────────────────
         annual_opex = capex_inr * AMC_RATE
@@ -194,9 +218,6 @@ def run_monte_carlo(
         },
         "n_scenarios":           n_scenarios,
         "never_break_even_pct":  round(float((~valid_mask).mean()) * 100, 1),
-        "scenarios_used":        "percentile_table" if percentile_table is not None
-                                 else "fallback_uniform",
-        # Stable frontend contract; scenarios_used remains for diagnostics and
-        # backwards compatibility with existing API consumers.
-        "is_site_specific":       percentile_table is not None,
+        "scenarios_used":        scenario_source,
+        "is_site_specific":       rainfall_baseline is not None,
     }

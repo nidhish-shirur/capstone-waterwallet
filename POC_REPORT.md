@@ -286,8 +286,11 @@ includes capex, residual water expenditure and annual maintenance. It exposes:
 - Configuration recommendation and AI advisory panels.
 - Browser-native print-report output.
 
-The ROI logic is demand-gated: useful water cannot exceed annual demand, and
-the current deterministic engine offsets tanker water before municipal water.
+The Monte Carlo ROI path is demand-gated at eligible non-potable demand
+(65 LPCD per occupant), while the total-demand baseline remains available for
+society-wide water accounting. The current deterministic engine offsets tanker
+water before municipal water and should be aligned with the same non-potable
+planning basis before production use.
 Annual maintenance is modelled at 3% of installation cost.
 
 ### 6.5 Tank sizing

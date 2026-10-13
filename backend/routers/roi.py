@@ -49,6 +49,7 @@ def roi_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResponse:
         water_tariff_per_kl = payload.water_tariff_per_kl,
         inflation_rate    = payload.inflation_rate,
         n_scenarios       = payload.n_scenarios,
+        monthly_rainfall_mm = payload.monthly_rainfall_mm,
     )
     return MonteCarloResponse(**result)
 

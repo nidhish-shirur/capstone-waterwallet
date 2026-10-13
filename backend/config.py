@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # JWT Authentication
     # Override JWT_SECRET_KEY in .env with: openssl rand -hex 32
-    JWT_SECRET_KEY: str = "change-me-in-production-please-run-openssl-rand-hex-32"
+    JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440  # 24 hours
 

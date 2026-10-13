@@ -32,6 +32,8 @@ class CatchmentResponse(BaseModel):
     monthly_rainfall_mm: list[float]
     annual_yield_litres: float
     monthly_yield_litres: list[float]
+    historical_start_year: int
+    historical_end_year: int
 
 class RainfallForecastRequest(BaseModel):
     latitude: float = Field(..., ge=-90, le=90)
@@ -103,7 +105,11 @@ class ROIResponse(BaseModel):
 # ---------------------------------------------------------------------------
 class MonteCarloRequest(BaseModel):
     rooftop_area_m2: float = Field(..., gt=0, description="Usable rooftop area in m²")
-    monthly_demand_kl: float = Field(..., gt=0, description="Monthly demand cap in KL")
+    monthly_demand_kl: float = Field(
+        ...,
+        gt=0,
+        description="Monthly eligible non-potable demand cap in KL",
+    )
     capex_inr: float = Field(..., gt=0, description="One-time installation cost in INR")
     tank_capacity_litres: float = Field(default=50000, gt=0, description="Tank capacity used to cap annual usable yield")
     rainfall_reduction_percent: float = Field(default=0, ge=0, le=50, description="Scenario reduction applied to sampled rainfall")
@@ -112,6 +118,12 @@ class MonteCarloRequest(BaseModel):
     water_tariff_per_kl: float = Field(default=15.0, gt=0, description="Municipal water tariff in INR/KL")
     inflation_rate: float = Field(default=0.08, ge=0, le=0.5, description="Annual tanker price inflation")
     n_scenarios: int = Field(default=1000, ge=100, le=5000, description="Number of Monte Carlo samples")
+    monthly_rainfall_mm: list[float] | None = Field(
+        default=None,
+        min_length=12,
+        max_length=12,
+        description="Phase 2 monthly rainfall baseline in mm; required for site-specific scenarios.",
+    )
 
 class MonteCarloResponse(BaseModel):
     median_breakeven_year: Optional[int]
@@ -344,7 +356,18 @@ class SocietyAnalysisResponse(BaseModel):
 
 class UserRegister(BaseModel):
     email: str = Field(..., description="User email address")
-    password: str = Field(..., min_length=6, description="Password — minimum 6 characters")
+    password: str = Field(
+        ...,
+        min_length=6,
+        description="Password — minimum 6 characters; maximum 72 UTF-8 bytes",
+    )
+
+    @field_validator("password")
+    @classmethod
+    def password_must_fit_bcrypt(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be no longer than 72 UTF-8 bytes")
+        return value
 
 class UserLogin(BaseModel):
     email: str
