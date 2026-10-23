@@ -14,6 +14,7 @@ Method mirrors the Colab notebook (Cell 10).
 import numpy as np
 import csv
 import os
+from math import isfinite
 from typing import Optional
 
 
@@ -101,8 +102,10 @@ def run_monte_carlo(
         }
     """
     if monthly_rainfall_mm is not None:
-        if len(monthly_rainfall_mm) != 12 or any(value < 0 for value in monthly_rainfall_mm):
-            raise ValueError("monthly_rainfall_mm must contain 12 non-negative values.")
+        if len(monthly_rainfall_mm) != 12 or any(
+            not isfinite(value) or value < 0 for value in monthly_rainfall_mm
+        ):
+            raise ValueError("monthly_rainfall_mm must contain 12 finite, non-negative values.")
         rainfall_baseline = np.asarray(monthly_rainfall_mm, dtype=float)
         scenario_source = "phase2_monthly_rainfall"
     else:
@@ -188,11 +191,14 @@ def run_monte_carlo(
                 + first_yr_municipal_sav * (1.05 ** (yr - 1))
             )
             net = gross_savings - annual_opex
+            prev_cumulative = cumulative
             cumulative += net
             if breakeven is None and cumulative >= 0:
-                breakeven = yr
+                deficit = -prev_cumulative
+                fraction = deficit / net if net > 0 else 0.0
+                breakeven = round((yr - 1) + fraction, 2)
 
-        breakeven_years.append(breakeven if breakeven is not None else ROI_YEARS + 1)
+        breakeven_years.append(breakeven if breakeven is not None else float(ROI_YEARS + 1))
 
     breakeven_arr = np.array(breakeven_years)
     valid_mask    = breakeven_arr <= ROI_YEARS
@@ -204,17 +210,17 @@ def run_monte_carlo(
     }
 
     valid_years = breakeven_arr[valid_mask]
-    median_be   = int(np.median(valid_years)) if valid_years.size > 0 else ROI_YEARS + 1
+    median_be   = round(float(np.median(valid_years)), 2) if valid_years.size > 0 else None
 
     return {
         "median_breakeven_year":  median_be,
-        "mean_breakeven_year":    round(float(breakeven_arr[valid_mask].mean()), 2)
+        "mean_breakeven_year":    round(float(valid_years.mean()), 2)
                                   if valid_years.size > 0 else None,
         "prob_breakeven_by_year": prob_by_year,
         "percentiles": {
-            "p10": int(np.percentile(breakeven_arr, 10)),
-            "p50": int(np.percentile(breakeven_arr, 50)),
-            "p90": int(np.percentile(breakeven_arr, 90)),
+            "p10": round(float(np.percentile(breakeven_arr, 10)), 2),
+            "p50": round(float(np.percentile(breakeven_arr, 50)), 2),
+            "p90": round(float(np.percentile(breakeven_arr, 90)), 2),
         },
         "n_scenarios":           n_scenarios,
         "never_break_even_pct":  round(float((~valid_mask).mean()) * 100, 1),

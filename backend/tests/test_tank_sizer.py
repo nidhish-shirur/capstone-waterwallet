@@ -96,6 +96,26 @@ class TankSizerTests(unittest.TestCase):
         self.assertTrue(all(left >= right for left, right in zip(overflow, overflow[1:])))
         self.assertTrue(all(left >= right for left, right in zip(unmet, unmet[1:])))
 
+    def test_finite_recharge_pit_splits_overflow(self) -> None:
+        # 1 day with 100mm on 100sqm with 1.0 runoff = 10,000L inflow.
+        # Demand = 0, tank_capacity = 0.
+        # recharge_capacity = 3,000 L/day.
+        # Should result in 3,000L recharge_overflow and 7,000L lost_overflow.
+        result = simulate_tank_year(
+            rainfall_mm=[100.0],
+            tank_capacity_litres=0,
+            daily_demand_litres=0,
+            usable_roof_area_sqm=100,
+            runoff_coefficient=1.0,
+            first_flush_fraction=0.0,
+            year=2021,
+            recharge_enabled=True,
+            recharge_capacity_litres_per_day=3000.0,
+        )
+        self.assertAlmostEqual(result.recharge_overflow_litres, 3000.0)
+        self.assertAlmostEqual(result.lost_overflow_litres, 7000.0)
+        self.assertAlmostEqual(result.total_inflow_litres, 10000.0)
+
 
 if __name__ == "__main__":
     unittest.main()

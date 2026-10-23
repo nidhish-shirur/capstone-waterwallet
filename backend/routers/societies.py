@@ -87,7 +87,7 @@ def get_society(id: int, current_user: db_models.User = Depends(get_current_user
     society = _societies.get(id)
     if society is None or society["user_id"] != current_user.id:
         raise HTTPException(status_code=404, detail="Society not found")
-    return {**society, "billing_entries": [], "analyses": []}
+    return {**society, "billing_entries": society.get("billing_entries", []), "analyses": []}
 
 
 @router.get("/{id}/database", response_model=schemas.SocietyDetailResponse)
@@ -174,7 +174,9 @@ def save_billing_entries(
     society = _societies.get(id)
     if society is None or society["user_id"] != current_user.id:
         raise HTTPException(status_code=404, detail="Society not found")
-    return [{"id": i+1, "society_id": id, **e.model_dump()} for i, e in enumerate(payload)]
+    entries = [{"id": i+1, "society_id": id, **e.model_dump()} for i, e in enumerate(payload)]
+    society["billing_entries"] = entries
+    return entries
 
 @router.post("/{id}/analyses", response_model=schemas.SocietyAnalysisResponse, status_code=status.HTTP_201_CREATED)
 def save_society_analysis(

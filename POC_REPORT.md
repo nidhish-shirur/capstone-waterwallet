@@ -33,7 +33,7 @@ backend unit-test set.
 
 The POC is **technically viable and suitable for academic demonstration and
 controlled pilot evaluation**. It is not yet a production SaaS release. The
-most important remaining gaps are authentication and full database-backed CRUD,
+most important remaining gaps are consistent API-wide authorization and full database-backed CRUD,
 broader ML validation using real labelled sites, production-grade deployment
 configuration, end-to-end test coverage, and a completed server-side PDF
 reporting path.
@@ -48,8 +48,8 @@ reporting path.
 | ML decision support | Demonstrated with limitations | Random Forest models, safety gate, SHAP response |
 | Financial modelling | Demonstrated | Deterministic ROI and Monte Carlo endpoints |
 | Persistence | Partially demonstrated | SQLAlchemy/Alembic schema exists; active CRUD is temporarily in-memory |
-| Security/authentication | Not production-ready | Auth code exists but is disabled in the active app |
-| Automated verification | Partial | Frontend build passes; four backend tank-sizer tests pass |
+| Security/authentication | Not production-ready | Login and society-level bearer-token checks are active, but calculation endpoints are not uniformly protected |
+| Automated verification | Partial | Frontend and backend unit suites run locally; browser end-to-end flows are not covered |
 | Production readiness | Not yet | Known operational, data, security and validation gaps remain |
 
 ---
@@ -373,12 +373,13 @@ The active FastAPI application registers the following route families:
 | `POST /api/roi/tank-sizer` | Daily tank simulation | Active |
 | `POST /api/advisory/water` | Grounded natural-language advisory | Optional; requires Groq key |
 
-Authentication routes and the authentication router are present in the
-repository but are deliberately disabled in `backend/main.py`. The frontend
-still contains authentication UI and calls `/api/auth/login`,
-`/api/auth/register` and `/api/auth/me`, but the active backend does not expose
-those routes. Authentication is therefore disabled, and the POC is not
-multi-user-secure.
+Authentication routes are registered in `backend/main.py`, and the frontend
+has login, guest access, and protected application routes. Society CRUD/read
+routes apply bearer-token ownership checks. Protection is incomplete across
+the API: calculation, rainfall, ML, ROI, tank-sizing, and advisory routes do
+not all require authentication. The POC must not be exposed publicly until
+those endpoints and deployment boundaries receive a consistent authorization
+review.
 
 ---
 
@@ -394,10 +395,10 @@ The repository includes a credible persistence foundation:
 
 However, the active society CRUD flow is currently an in-memory store:
 `societies.py` keeps records in the process-local `_societies` dictionary, so
-data is lost whenever the backend restarts. Billing writes return an echo of
-the submitted entries rather than persisting them. The database endpoints are
-explicitly labelled as temporary read-only loaders. This creates an important
-distinction:
+those society and billing writes are lost whenever the backend restarts.
+Database society and billing endpoints are read-only loaders; analysis writes
+may be persisted when a matching database society exists, but otherwise use
+the in-memory analysis store. This creates an important distinction:
 
 | Capability | Current state |
 |---|---|
@@ -405,15 +406,16 @@ distinction:
 | Migration foundation | Implemented |
 | Read persisted society data | Implemented through temporary endpoints |
 | Standard create/update/list/delete flow | Not database-backed; active writes use `_societies` |
-| Billing and analysis writes | Echo responses; not persisted |
-| User ownership enforcement | Not enforced; authentication is disabled |
+| Billing and analysis writes | Billing remains in-memory; analysis persistence depends on whether a matching database society exists |
+| User ownership enforcement | Applied to society routes; not consistently applied to analysis endpoints |
 | Durable analysis history | Model exists; active write path is not fully persistent |
 
-Society creation currently assigns `user_id: 0`, and active routes do not use
-`Depends(get_current_user)`. Any caller can therefore read or write any
-in-memory society. Before production use, the normal CRUD and analysis paths
-should be moved to a single transactional database flow with authenticated
-ownership checks.
+Society creation associates the record with the authenticated user, and
+in-memory society reads and writes check that owner. The persistence and
+analysis flows still span in-memory and database paths, so saved database
+records do not behave like normal writable societies. Before production use,
+the normal CRUD and analysis paths should move to a single transactional
+database flow with consistent authenticated ownership checks.
 
 ### Monte Carlo caveats
 
@@ -517,7 +519,7 @@ the corrected backend-context run passed.
 - Frontend component tests.
 - Browser end-to-end test for the full three-phase flow.
 - Persistence integration tests against PostgreSQL.
-- Authentication and authorization tests after auth is re-enabled.
+- Complete authentication and authorization tests across all API routes.
 
 ---
 
@@ -553,9 +555,9 @@ the corrected backend-context run passed.
 | Single-site real validation | Insufficient statistical evidence | Thane case-study comparison | Run multi-site, stratified validation |
 | Thane-specific rainfall calibration | Poor transfer to other locations | Open-Meteo location retrieval | Fit or validate models per MMR zone |
 | External API outage | Map and rainfall workflow can be unavailable | Explicit errors and some UI fallback state | Add controlled caching, retries and observable service status |
-| Authentication disabled | Any user could access demonstration routes | Auth code is retained for re-enablement | Enable JWT/session flow and ownership checks |
-| In-memory CRUD and echo writes | Data loss on restart; billing and analyses are not persisted | Temporary database read endpoints | Make PostgreSQL the single source of truth |
-| Missing owner scoping | Any caller can read or write any society; active routes lack `get_current_user` | None in the active POC | Require authenticated `user_id` filters on every user-specific query |
+| Partial API authorization | Calculation and analysis routes can be called without a bearer token | Society routes enforce owner checks | Apply consistent API authentication and authorization |
+| In-memory CRUD and partial persistence | Society and billing writes can be lost on restart; analysis persistence varies by record source | Selected database loaders and analysis writes | Make PostgreSQL the single source of truth |
+| Inconsistent persistence ownership path | Database-loaded records do not behave like in-memory editable societies | Explicitly separate routes | Use one transactional repository path with owner filters |
 | Monte Carlo fallback | Generic fallback can look like calibrated output | `scenarios_used` response field and UI warning | Fail clearly or require a site-specific dataset for pilot decisions |
 | Independent-month Monte Carlo sampling | Breaks within-year rainfall correlation | Documented assumption | Bootstrap complete historical years |
 | Fractional occupant truncation | Demand may be understated for fractional averages | Current `int()` behavior is documented | Adopt and test an explicit rounding policy |
@@ -591,7 +593,7 @@ public-facing financial or engineering authority.
 
 ### Minimum release gates
 
-1. Re-enable and test authentication and user-level authorization.
+1. Apply and test authentication and user-level authorization across every API route.
 2. Convert all active CRUD and analysis writes to PostgreSQL transactions.
 3. Add API, schema, integration and browser end-to-end tests.
 4. Establish a real-data ML validation protocol and publish confidence limits.
@@ -620,7 +622,7 @@ public-facing financial or engineering authority.
 
 ### Phase B — Complete application integrity
 
-- Re-enable authentication in `App.jsx` and `backend/main.py`.
+- Apply consistent authentication in backend routes; frontend login and protected navigation are already active.
 - Replace the in-memory society store with SQLAlchemy repositories.
 - Add ownership filters to every society, billing and analysis query.
 - Replace independent-month Monte Carlo sampling with complete historical-year

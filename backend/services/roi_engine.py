@@ -17,11 +17,16 @@ def simulate_roi(
     """
     Simulate a multi-year ROI for a rainwater harvesting system.
 
-    Logic:
-    - Usable annual yield is capped by eligible demand.
-    - Tank capacity is accepted for API compatibility; monthly storage effects
-      are calculated by the Monte Carlo and tank-sizer services, which receive
-      the monthly rainfall series.
+    Methodology & Yield Harmonization:
+    - Theoretical Unconstrained Ceiling: This deterministic engine models the
+      potential return assuming 100% of harvestable annual rainwater is utilized
+      up to the eligible non-potable annual demand (min(yield, demand)).
+    - Storage-Constrained Reality: Real systems are limited by seasonal monsoon
+      concentration and finite tank storage. The Monte Carlo (monte_carlo.py)
+      and daily tank sizing (tank_sizer.py) services enforce sequential monthly
+      and daily tank water balances, where excess monsoon inflow spills as overflow.
+      Consequently, deterministic payback represents an optimal upper bound, whereas
+      Monte Carlo payback reflects a conservative, storage-constrained reality.
     - Yield offsets high-cost tanker water first, then municipal water.
     - Compounds tanker tariff by escalation rate and municipal tariff by 5%.
     - Subtracts 3% of installation cost as annual maintenance cost (AMC) from savings.
@@ -30,8 +35,7 @@ def simulate_roi(
     """
     annual_demand_litres = daily_demand_lpd * 365
     # The annual yield already comes from the roof/rainfall calculation.
-    # A tank can refill during the year, so applying an arbitrary multiple of
-    # tank capacity here would produce a false annual yield cap.
+    # Deterministic simulation assumes an ideal seasonal buffer up to annual demand.
     effective_annual_yield = min(annual_yield_litres, annual_demand_litres)
 
     # Volumetric offsets

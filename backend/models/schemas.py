@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -16,6 +16,12 @@ class SocietyBaselineResponse(BaseModel):
     base_demand_lpd: float
     daily_demand_lpd: float
     daily_demand_with_buffer_lpd: float
+    potable_demand_lpd: Optional[float] = None
+    non_potable_demand_lpd: Optional[float] = None
+    base_potable_demand_lpd: Optional[float] = None
+    base_non_potable_demand_lpd: Optional[float] = None
+    potable_lpcd: Optional[float] = 70.0
+    non_potable_lpcd: Optional[float] = 65.0
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +40,8 @@ class CatchmentResponse(BaseModel):
     monthly_yield_litres: list[float]
     historical_start_year: int
     historical_end_year: int
+    source: str
+    fallback_used: bool
 
 class RainfallForecastRequest(BaseModel):
     latitude: float = Field(..., ge=-90, le=90)
@@ -48,6 +56,8 @@ class RainfallForecastResponse(BaseModel):
     annual_yield_litres: float
     monthly_yield_litres: list[float]
     source: str
+    history_source: str
+    fallback_used: bool
     model_order: dict
     training_months: int
     confidence_intervals: list[dict[str, float]]
@@ -118,18 +128,22 @@ class MonteCarloRequest(BaseModel):
     water_tariff_per_kl: float = Field(default=15.0, gt=0, description="Municipal water tariff in INR/KL")
     inflation_rate: float = Field(default=0.08, ge=0, le=0.5, description="Annual tanker price inflation")
     n_scenarios: int = Field(default=1000, ge=100, le=5000, description="Number of Monte Carlo samples")
-    monthly_rainfall_mm: list[float] | None = Field(
+    monthly_rainfall_mm: list[Annotated[float, Field(ge=0, allow_inf_nan=False)]] | None = Field(
         default=None,
         min_length=12,
         max_length=12,
         description="Phase 2 monthly rainfall baseline in mm; required for site-specific scenarios.",
     )
+    roof_surface_type: Optional[str] = Field(
+        default="concrete",
+        description="Type of roof surface (concrete, metal, gravel, tiles)",
+    )
 
 class MonteCarloResponse(BaseModel):
-    median_breakeven_year: Optional[int]
+    median_breakeven_year: Optional[float]
     mean_breakeven_year: Optional[float]
     prob_breakeven_by_year: dict  # {"1": 0.02, "2": 0.45, ...}
-    percentiles: dict             # {"p10": int, "p50": int, "p90": int}
+    percentiles: dict             # {"p10": float, "p50": float, "p90": float}
     n_scenarios: int
     never_break_even_pct: float
     scenarios_used: str
@@ -151,23 +165,45 @@ class TankSizerRequest(BaseModel):
         ),
     )
     candidate_capacities_litres: list[float] = Field(
-        default=[0, 10000, 20000, 30000, 50000, 75000, 100000, 150000],
+        default=[5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 70000],
         min_length=1,
     )
     tanker_rate_per_litre: float = Field(default=0.8, ge=0)
     tank_cost_per_litre: float = Field(
         default=4.0,
         gt=0,
-        description="Storage vessel material cost per litre; scales with candidate capacity.",
+        description=(
+            "Storage vessel material + civil cost per litre of capacity. "
+            "Default 4.0 INR/L is illustrative for MMR RCC/FRP tanks; "
+            "override with site-specific quotation when available."
+        ),
     )
     fixed_system_cost: float = Field(
         default=7200,
         ge=0,
-        description="Shared collection chamber, first-flush, filter, piping, and installation cost.",
+        description=(
+            "Shared collection chamber, first-flush diverter, dual-media filter, "
+            "piping, and installation cost (INR). Default 7,200 INR is illustrative "
+            "for a small-to-medium MMR society; override with actual quotation."
+        ),
     )
     first_flush_fraction: float = Field(default=0.05, ge=0, lt=1)
-    reliability_target_percent: float = Field(default=80, gt=0, le=100)
+    reliability_target_percent: float = Field(
+        default=40.0,
+        gt=0,
+        le=100,
+        description="Reliability target percent. 40% is realistic for MMR monsoon-concentrated rainfall.",
+    )
     recharge_enabled: bool = False
+    recharge_capacity_litres_per_day: float = Field(
+        default=10000,
+        ge=0,
+        description=(
+            "Daily infiltration capacity of the recharge pit in litres. "
+            "Tank overflow exceeding this rate on any day spills as lost_overflow. "
+            "Default 10,000 L/day for a standard 1.2 m × 3 m gravel-packed pit."
+        ),
+    )
 
     @field_validator("candidate_capacities_litres")
     @classmethod
@@ -197,7 +233,7 @@ class MLRecommendRequest(BaseModel):
     borewell: int = Field(..., ge=0, le=1, description="1 if borewell exists, 0 otherwise")
     borewell_depth: float = Field(default=0.0, ge=0, description="Borewell depth in metres")
     soil_perm: int = Field(..., ge=1, le=5, description="Soil permeability class (1=very low, 5=very high)")
-    coastal_km: float = Field(..., gt=0, description="Distance from coast in km")
+    coastal_km: float = Field(..., ge=0, description="Distance from coast in km")
     annual_rain_mm: float = Field(..., gt=0, description="Annual rainfall in mm")
     peak_day_mm: float = Field(..., gt=0, description="Peak single-day rainfall in mm")
 
@@ -247,7 +283,7 @@ class WaterAdvisoryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 class MLYieldRequest(BaseModel):
     rooftop_area_m2: float = Field(..., gt=0, description="Rooftop area in m²")
-    monthly_rainfall_mm: list[float] = Field(
+    monthly_rainfall_mm: list[Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
         ..., min_length=12, max_length=12,
         description="List of 12 monthly rainfall values in mm"
     )

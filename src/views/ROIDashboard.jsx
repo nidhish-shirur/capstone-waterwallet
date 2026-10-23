@@ -1,11 +1,415 @@
-import React, { useMemo, useState, memo, useCallback, useEffect } from 'react';
-import { Download, TrendingDown, IndianRupee, Clock, Droplets, SlidersHorizontal, Cpu, ShieldAlert, Sparkles, HelpCircle } from 'lucide-react';
+import React, { useMemo, useState, memo, useCallback, useEffect, useRef } from 'react';
+import { Download, TrendingDown, IndianRupee, Clock, Droplets, SlidersHorizontal, Cpu, ShieldAlert, Sparkles, HelpCircle, FileSpreadsheet, FileCode } from 'lucide-react';
 import {
   Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, ComposedChart, BarChart, Bar, Cell
 } from 'recharts';
 import { simulateROI, runMonteCarlo, getMLRecommendation, getWaterAdvisory, saveSocietyAnalysis, sizeTank } from '../api/waterwallet';
 import { useWaterWallet } from '../context/WaterWalletContext';
+import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
+import { escapeCsvCell } from '../utils/csv';
+
+// ─── Tank Visualizer Component (Faithful 3D Cylinder & Monthly Water Balance) ──
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MMR_RAIN_FRACTIONS = [0.0002, 0.0001, 0.0003, 0.0005, 0.0070, 0.2200, 0.3800, 0.2600, 0.1200, 0.0110, 0.0007, 0.0002];
+const DAYS_PER_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function TankVisualizer({ tankSizerResult, nonPotableDailyDemand }) {
+  const [activeMonth, setActiveMonth] = useState(7); // August (index 7, like in the reference image)
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [showTrends, setShowTrends] = useState(false);
+  const playRef = useRef(null);
+
+  // Compute steady-state monthly water balance for the selected tank capacity
+  const monthlyData = useMemo(() => {
+    if (!tankSizerResult?.selected_candidate?.years) return null;
+    const years = tankSizerResult.selected_candidate.years;
+    const capacity = Number(tankSizerResult.selected_candidate.capacity_litres);
+    const avgAnnualInflow = years.reduce((s, y) => s + (y.total_inflow_litres || 0), 0) / years.length;
+    const dailyDemand = nonPotableDailyDemand;
+
+    // Simulate 2 consecutive years to reach cyclic steady-state tank storage
+    let currentLevel = 0;
+    const monthStats = [];
+
+    for (let cycle = 0; cycle < 2; cycle++) {
+      for (let i = 0; i < 12; i++) {
+        const supply = avgAnnualInflow * MMR_RAIN_FRACTIONS[i];
+        const demand = dailyDemand * DAYS_PER_MONTH[i];
+        const netChange = supply - demand;
+        const available = currentLevel + supply;
+        const served = Math.min(available, demand);
+        currentLevel = Math.max(0, Math.min(capacity, available - demand));
+        const fillPct = capacity > 0 ? Math.min(100, Math.max(0, Math.round((currentLevel / capacity) * 100))) : 0;
+
+        if (cycle === 1) {
+          monthStats.push({
+            month: MONTHS[i],
+            supplyLitres: supply,
+            demandLitres: demand,
+            netChangeLitres: netChange,
+            tankLevelLitres: currentLevel,
+            servedLitres: served,
+            unmetLitres: Math.max(0, demand - served),
+            fillPct,
+          });
+        }
+      }
+    }
+    return monthStats;
+  }, [tankSizerResult, nonPotableDailyDemand]);
+
+  useEffect(() => {
+    if (isPlaying) {
+      playRef.current = setInterval(() => {
+        setActiveMonth(m => {
+          if (m >= 11) {
+            return 0; // Loop smoothly
+          }
+          return m + 1;
+        });
+      }, 1000);
+    } else {
+      clearInterval(playRef.current);
+    }
+    return () => clearInterval(playRef.current);
+  }, [isPlaying]);
+
+  if (!monthlyData || monthlyData.length === 0) return null;
+
+  const current = monthlyData[activeMonth];
+  const capacityLitres = Number(tankSizerResult.selected_candidate.capacity_litres);
+  const capacityKL = (capacityLitres / 1000).toFixed(2);
+  const currentKL = (current.tankLevelLitres / 1000).toFixed(2);
+  const fillPct = current.fillPct;
+
+  // Formatted numbers in "k" (e.g. +21.82 k, -16.74 k, +5.08 kl)
+  const supplyFormatted = (current.supplyLitres / 1000).toFixed(2);
+  const demandFormatted = (current.demandLitres / 1000).toFixed(2);
+  const netChangeVal = current.netChangeLitres / 1000;
+  const netChangeFormatted = Math.abs(netChangeVal).toFixed(2);
+  const isNetPositive = netChangeVal >= 0;
+
+  // Geometry parameters for 3D Cylinder SVG (matching reference mockup)
+  const cylinderX = 75;
+  const cylinderWidth = 150;
+  const cylinderRadiusX = 75;
+  const cylinderRadiusY = 16;
+  const cylinderTopY = 28;
+  const cylinderHeight = 190;
+  const cylinderBottomY = cylinderTopY + cylinderHeight; // 218
+  const waterHeight = (fillPct / 100) * cylinderHeight;
+  const waterTopY = cylinderBottomY - waterHeight;
+
+  return (
+    <div className="mt-6 bg-[#fbfdfd] border border-slate-200/90 rounded-3xl p-6 md:p-8 shadow-sm">
+      {/* Top Header matching reference image */}
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            TANK LEVEL — {MONTHS[activeMonth].toUpperCase()}
+          </p>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-3xl md:text-4xl font-serif font-extrabold text-[#231f1c]">
+              {currentKL} kL
+            </span>
+            <span className="text-sm md:text-base text-slate-400 font-normal">
+              of {capacityKL} kL
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setIsPlaying(prev => !prev)}
+          className="flex items-center gap-1.5 bg-[#3a2e28] hover:bg-[#4d3e36] text-white text-xs font-semibold px-5 py-2 rounded-full transition-all shadow-sm cursor-pointer"
+        >
+          {isPlaying ? 'Pause' : 'Play'}
+        </button>
+      </div>
+
+      {/* Center Visualization: 3D Tank with Ticks and Readouts */}
+      <div className="my-6 flex flex-col md:flex-row items-center justify-center gap-6 md:gap-10">
+        <div className="relative flex items-center justify-center">
+          <svg width="270" height="260" viewBox="0 0 270 260" className="overflow-visible select-none">
+            <defs>
+              {/* Glass wall gradient with realistic lighting */}
+              <linearGradient id="glassWallGrad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#94a3b8" stopOpacity="0.5" />
+                <stop offset="8%" stopColor="#cbd5e1" stopOpacity="0.25" />
+                <stop offset="45%" stopColor="#f8fafc" stopOpacity="0.1" />
+                <stop offset="92%" stopColor="#cbd5e1" stopOpacity="0.25" />
+                <stop offset="100%" stopColor="#64748b" stopOpacity="0.6" />
+              </linearGradient>
+
+              {/* Water body gradient */}
+              <linearGradient id="tankWaterGrad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#0891b2" stopOpacity="0.95" />
+                <stop offset="50%" stopColor="#06b6d4" stopOpacity="0.9" />
+                <stop offset="100%" stopColor="#0e7490" stopOpacity="0.98" />
+              </linearGradient>
+
+              {/* Water surface elliptical lid gradient */}
+              <linearGradient id="waterSurfaceGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#67e8f9" />
+                <stop offset="100%" stopColor="#06b6d4" />
+              </linearGradient>
+
+              {/* Top glass rim gradient */}
+              <linearGradient id="topRimGrad" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#64748b" />
+                <stop offset="50%" stopColor="#94a3b8" />
+                <stop offset="100%" stopColor="#475569" />
+              </linearGradient>
+
+              {/* Clip path for water within cylinder */}
+              <clipPath id="cylinderClip">
+                <rect x={cylinderX} y={cylinderTopY} width={cylinderWidth} height={cylinderHeight + cylinderRadiusY} />
+              </clipPath>
+            </defs>
+
+            {/* Drop shadow on floor beneath cylinder */}
+            <ellipse
+              cx={cylinderX + cylinderRadiusX}
+              cy={cylinderBottomY + 8}
+              rx={cylinderRadiusX + 6}
+              ry={cylinderRadiusY}
+              fill="#94a3b8"
+              opacity="0.28"
+            />
+
+            {/* Percentage Tick Marks on Left side of cylinder */}
+            {[
+              { pct: 75, y: cylinderBottomY - 0.75 * cylinderHeight },
+              { pct: 50, y: cylinderBottomY - 0.50 * cylinderHeight },
+              { pct: 25, y: cylinderBottomY - 0.25 * cylinderHeight },
+            ].map(({ pct, y }) => (
+              <g key={pct}>
+                <text
+                  x={cylinderX - 16}
+                  y={y + 4}
+                  textAnchor="end"
+                  className="text-[11px] font-medium fill-slate-400 select-none"
+                >
+                  {pct}%
+                </text>
+                <line
+                  x1={cylinderX - 10}
+                  y1={y}
+                  x2={cylinderX}
+                  y2={y}
+                  stroke="#94a3b8"
+                  strokeWidth="1.2"
+                />
+              </g>
+            ))}
+
+            {/* Back half of bottom base ellipse */}
+            <ellipse
+              cx={cylinderX + cylinderRadiusX}
+              cy={cylinderBottomY}
+              rx={cylinderRadiusX}
+              ry={cylinderRadiusY}
+              fill="#e2e8f0"
+              opacity="0.6"
+            />
+
+            {/* Water Fill Layer */}
+            {fillPct > 0 && (
+              <g clipPath="url(#cylinderClip)">
+                {/* Lower body of water */}
+                <path
+                  d={`
+                    M ${cylinderX},${waterTopY}
+                    L ${cylinderX},${cylinderBottomY}
+                    A ${cylinderRadiusX} ${cylinderRadiusY} 0 0 0 ${cylinderX + cylinderWidth},${cylinderBottomY}
+                    L ${cylinderX + cylinderWidth},${waterTopY}
+                    Z
+                  `}
+                  fill="url(#tankWaterGrad)"
+                  style={{ transition: 'all 0.6s cubic-bezier(0.4, 0, 0.2, 1)' }}
+                />
+                {/* 3D Top surface of water */}
+                <ellipse
+                  cx={cylinderX + cylinderRadiusX}
+                  cy={waterTopY}
+                  rx={cylinderRadiusX - 1}
+                  ry={cylinderRadiusY - 1}
+                  fill="url(#waterSurfaceGrad)"
+                  stroke="#22d3ee"
+                  strokeWidth="0.8"
+                  style={{ transition: 'cy 0.6s cubic-bezier(0.4, 0, 0.2, 1)' }}
+                />
+              </g>
+            )}
+
+            {/* Translucent Cylinder Glass Body */}
+            <rect
+              x={cylinderX}
+              y={cylinderTopY}
+              width={cylinderWidth}
+              height={cylinderHeight}
+              fill="url(#glassWallGrad)"
+              stroke="none"
+            />
+
+            {/* Left and Right vertical edge strokes of cylinder */}
+            <line
+              x1={cylinderX}
+              y1={cylinderTopY}
+              x2={cylinderX}
+              y2={cylinderBottomY}
+              stroke="#475569"
+              strokeWidth="1.5"
+            />
+            <line
+              x1={cylinderX + cylinderWidth}
+              y1={cylinderTopY}
+              x2={cylinderX + cylinderWidth}
+              y2={cylinderBottomY}
+              stroke="#475569"
+              strokeWidth="1.5"
+            />
+
+            {/* Front half arc of bottom base */}
+            <path
+              d={`
+                M ${cylinderX},${cylinderBottomY}
+                A ${cylinderRadiusX} ${cylinderRadiusY} 0 0 0 ${cylinderX + cylinderWidth},${cylinderBottomY}
+              `}
+              fill="none"
+              stroke="#475569"
+              strokeWidth="1.5"
+            />
+
+            {/* Top 3D Elliptical Rim of Cylinder */}
+            <ellipse
+              cx={cylinderX + cylinderRadiusX}
+              cy={cylinderTopY}
+              rx={cylinderRadiusX}
+              ry={cylinderRadiusY}
+              fill="none"
+              stroke="url(#topRimGrad)"
+              strokeWidth="1.6"
+            />
+          </svg>
+        </div>
+
+        {/* Readout on the Right (Supply / Demand / Net change) */}
+        <div className="flex flex-row md:flex-col justify-center gap-6 md:gap-5 min-w-[130px]">
+          <div>
+            <p className="text-xs text-slate-500 font-medium">Supply</p>
+            <p className="text-base font-bold text-emerald-600 tracking-tight">
+              +{supplyFormatted} k
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-medium">Demand</p>
+            <p className="text-base font-bold text-[#b94723] tracking-tight">
+              −{demandFormatted} k
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-slate-500 font-medium">Net change</p>
+            <p className={`text-base font-bold tracking-tight ${isNetPositive ? 'text-emerald-600' : 'text-[#b94723]'}`}>
+              {isNetPositive ? '+' : '−'}{netChangeFormatted} kl
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Month Scrubber Pills matching reference mockup */}
+      <div className="flex flex-wrap items-center justify-center gap-1.5 md:gap-2 mt-4">
+        {MONTHS.map((m, idx) => {
+          const isActive = idx === activeMonth;
+          return (
+            <button
+              key={m}
+              type="button"
+              onClick={() => {
+                setActiveMonth(idx);
+                setIsPlaying(false);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                isActive
+                  ? 'bg-[#3a2e28] text-white shadow-sm scale-105'
+                  : 'bg-[#f1f3f5] text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+              }`}
+            >
+              {m}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Bottom capacity summary caption */}
+      <p className="text-center text-xs text-slate-400 mt-3 font-normal">
+        Tank at {fillPct}% capacity.
+      </p>
+
+      {/* Expandable Monthly Trends & Breakdown Chart */}
+      <div className="mt-5 border-t border-slate-100 pt-3">
+        <button
+          type="button"
+          onClick={() => setShowTrends(prev => !prev)}
+          className="mx-auto flex items-center gap-1.5 text-xs text-cyan-800 hover:text-cyan-900 font-semibold"
+        >
+          {showTrends ? 'Hide monthly supply vs demand chart ▲' : 'Show monthly supply vs demand chart ▼'}
+        </button>
+
+        {showTrends && (
+          <div className="mt-4 pt-2">
+            <ResponsiveContainer width="100%" height={160}>
+              <BarChart
+                data={monthlyData}
+                barGap={2}
+                barSize={12}
+                onClick={(e) => {
+                  if (e?.activeTooltipIndex != null) {
+                    setActiveMonth(e.activeTooltipIndex);
+                    setIsPlaying(false);
+                  }
+                }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                <YAxis
+                  tick={{ fontSize: 9, fill: '#94a3b8' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={v => `${(v / 1000).toFixed(0)}k`}
+                />
+                <Tooltip
+                  formatter={(v, name) => [`${(v / 1000).toFixed(2)} kL`, name]}
+                  labelStyle={{ fontWeight: 'bold', fontSize: 11 }}
+                  contentStyle={{ borderRadius: 8, border: '1px solid #cbd5e1', fontSize: 11 }}
+                />
+                <Bar dataKey="supplyLitres" name="Rain Harvested" fill="#06b6d4" radius={[3, 3, 0, 0]}>
+                  {monthlyData.map((_, i) => (
+                    <Cell
+                      key={i}
+                      fill={i === activeMonth ? '#0891b2' : '#06b6d4'}
+                      opacity={i === activeMonth ? 1 : 0.65}
+                    />
+                  ))}
+                </Bar>
+                <Bar dataKey="demandLitres" name="Demand" fill="#f59e0b" radius={[3, 3, 0, 0]}>
+                  {monthlyData.map((_, i) => (
+                    <Cell
+                      key={i}
+                      fill={i === activeMonth ? '#b45309' : '#f59e0b'}
+                      opacity={i === activeMonth ? 1 : 0.6}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // ─── Scenario definitions ────────────────────────────────────────────────────
 const SCENARIOS = [
@@ -18,7 +422,7 @@ const DISPLAYED_SAVINGS_YEARS = 10;
 const ROOF_USABLE_FACTOR = 0.80;
 const NON_POTABLE_LPCD = 65;
 
-function escapeHtml(value) {
+function _escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -529,16 +933,30 @@ export default function ROIDashboard() {
     totalTankerSpend, totalMunicipal, totalTankerVolume, billingMonths,
     estimatedCapex, setEstimatedCapex,
     annualYield, setAnnualYield,
+    mlAnnualYield,
     annualDemand, capexRatePerSqm, setCapexRatePerSqm,
-    grossRoofArea,
-    societyName, flats, occupants,
+    grossRoofArea, setGrossRoofArea,
+    societyName, flats, occupants, pincode,
     borewell, setBorewell,
     borewellDepth, setBorewellDepth,
     soilPerm, setSoilPerm,
     coastalKm, setCoastalKm,
-    monthlyRainfall
-    , roofSurfaceType, siteLatitude, siteLongitude
+    monthlyRainfall,
+    roofSurfaceType, siteLatitude, siteLongitude,
+    nonPotableDemand,
+    rainfallSource,
+    tankCapacityLitres, setTankCapacityLitres,
+    roofPolygonPoints, polygonGeoJSON,
   } = useWaterWallet();
+
+  // ─── ML vs Physics yield source toggle ───────────────────────────────────
+  const [yieldSource, setYieldSource] = useState('physics'); // 'physics' | 'ml'
+  const hasMlYield = mlAnnualYield != null && mlAnnualYield > 0;
+  // Active yield: use ML if toggle is set to 'ml' and ML data is available
+  const activeAnnualYield = yieldSource === 'ml' && hasMlYield ? mlAnnualYield : annualYield;
+  const mlDeviationPct = hasMlYield && annualYield > 0
+    ? (((mlAnnualYield - annualYield) / annualYield) * 100).toFixed(1)
+    : null;
 
   // Phase 2 prices usable roof area (gross area × obstacle factor). Recover
   // the gross area for display/ML while preserving the exact Phase 2 capex.
@@ -550,23 +968,33 @@ export default function ROIDashboard() {
   const annualMunicipal = ((totalMunicipal   / months) * 12) / 100000;
   const annualTankerVolumeLitres = ((totalTankerVolume / months) * 12) || 0;
   const capex           = adjustedCapex / 100000;
+  const nonPotableDemandLitres = Number(nonPotableDemand) > 0
+    ? Number(nonPotableDemand)
+    : Math.max(0, Number(flats || 0) * Number(occupants || 0) * NON_POTABLE_LPCD * 365);
+  const nonPotableDailyDemand = nonPotableDemandLitres / 365;
   const municipalVolumeLitres = Math.max(0, nonPotableDemandLitres - annualTankerVolumeLitres);
   const fallbackMunicipalTariffPerKl = 15.0;
   const municipalTariffIsFallback = !(municipalVolumeLitres > 0 && annualMunicipal > 0);
   const municipalTariffPerKl = !municipalTariffIsFallback
     ? (annualMunicipal * 100000) / (municipalVolumeLitres / 1000)
     : fallbackMunicipalTariffPerKl;
-  const [tankCapacityLitres, setTankCapacityLitres] = useState(10000);
   const [rainfallReductionPercent, setRainfallReductionPercent] = useState(0);
   const [tankSizerResult, setTankSizerResult] = useState(null);
   const [tankSizerLoading, setTankSizerLoading] = useState(false);
   const [tankSizerError, setTankSizerError] = useState(null);
-  const effectiveAnnualYield = annualYield * (1 - rainfallReductionPercent / 100);
-  const nonPotableDemandLitres = Math.max(
-    0,
-    Number(flats || 0) * Number(occupants || 0) * NON_POTABLE_LPCD * 365,
-  );
-  const nonPotableDailyDemand = nonPotableDemandLitres / 365;
+  const [tankApplied, setTankApplied] = useState(false);
+  const effectiveAnnualYield = activeAnnualYield * (1 - rainfallReductionPercent / 100);
+
+  // ─── Apply Tank Sizer recommendation to ROI slider ───────────────────────
+  const handleApplyRecommendedTank = useCallback(() => {
+    if (tankSizerResult?.selected_candidate?.capacity_litres) {
+      const cap = Number(tankSizerResult.selected_candidate.capacity_litres);
+      if (cap > 0) {
+        setTankCapacityLitres(Math.min(Math.max(cap, 5000), 100000));
+        setTankApplied(true);
+      }
+    }
+  }, [tankSizerResult, setTankCapacityLitres]);
 
   const handleRunTankSizer = useCallback(async () => {
     setTankSizerLoading(true);
@@ -583,7 +1011,7 @@ export default function ROIDashboard() {
           : 0.8,
         tank_cost_per_litre: 4,
         fixed_system_cost: 7200,
-        reliability_target_percent: 80,
+        reliability_target_percent: 40,
         recharge_enabled: Boolean(borewell),
       });
       setTankSizerResult(result);
@@ -596,12 +1024,19 @@ export default function ROIDashboard() {
 
   const handleRooftopChange = useCallback((newArea) => {
     const area = Math.max(50, Number(newArea));
+    setGrossRoofArea(area);
     setEstimatedCapex(area * ROOF_USABLE_FACTOR * capexRatePerSqm);
     const annualRainfall = monthlyRainfall?.some((value) => value > 0)
       ? monthlyRainfall.reduce((sum, value) => sum + Number(value || 0), 0)
       : 2424;
-    setAnnualYield(Math.round(area * ROOF_USABLE_FACTOR * annualRainfall * 0.90));
-  }, [capexRatePerSqm, monthlyRainfall, setEstimatedCapex, setAnnualYield]);
+    const runoffCoefficient = ROOF_RUNOFF_COEFFICIENTS[roofSurfaceType] || 0.90;
+    setAnnualYield(Math.round(area * ROOF_USABLE_FACTOR * annualRainfall * runoffCoefficient));
+  }, [capexRatePerSqm, monthlyRainfall, roofSurfaceType, setEstimatedCapex, setAnnualYield, setGrossRoofArea]);
+
+  const handleCapexRateChange = useCallback((rate) => {
+    setCapexRatePerSqm(rate);
+    setEstimatedCapex(tracedAreaProxy * ROOF_USABLE_FACTOR * rate);
+  }, [setCapexRatePerSqm, setEstimatedCapex, tracedAreaProxy]);
 
   // Local fallback if backend fails
   const localChartData = useMemo(() => {
@@ -656,6 +1091,7 @@ export default function ROIDashboard() {
   const [roiResult, setRoiResult] = useState(null);
   const [loadingML, setLoadingML] = useState(true);
   const [errorStatus, setErrorStatus] = useState(null);
+  const roiRequestId = useRef(0);
   const [waterAdvisory, setWaterAdvisory] = useState(null);
   const [advisoryLoading, setAdvisoryLoading] = useState(false);
   const [advisoryError, setAdvisoryError] = useState(null);
@@ -663,13 +1099,24 @@ export default function ROIDashboard() {
 
   // ─── Fetch ML Recommendation & Monte Carlo from Backend ─────────────────────
   useEffect(() => {
-    if (!tracedAreaProxy || !annualDemand) return;
+    const requestId = ++roiRequestId.current;
+    const cancelStaleRequest = () => {
+      if (roiRequestId.current === requestId) roiRequestId.current += 1;
+    };
+    if (!tracedAreaProxy || !annualDemand) {
+      setMonteCarloResult(null);
+      setMlRecommendResult(null);
+      setRoiResult(null);
+      setErrorStatus(null);
+      setLoadingML(false);
+      return cancelStaleRequest;
+    }
     setLoadingML(true);
     setErrorStatus(null);
 
     // Case A: RWH is modelled for eligible non-potable uses only.
     const monthlyDemandKl = (nonPotableDemandLitres / 12) / 1000;
-    const rooftopSqm = Math.max(100, tracedAreaProxy);
+    const rooftopSqm = tracedAreaProxy;
     const rainMm = (monthlyRainfall && monthlyRainfall.some(v => v > 0))
       ? monthlyRainfall.reduce((a, b) => a + b, 0)
       : 2424;
@@ -683,9 +1130,12 @@ export default function ROIDashboard() {
     const mcPromise = runMonteCarlo({
       rooftop_area_m2: rooftopSqm,
       monthly_demand_kl: monthlyDemandKl,
-      monthly_rainfall_mm: monthlyRainfall?.length === 12 ? monthlyRainfall : undefined,
+      monthly_rainfall_mm: (rainfallSource === 'phase2_historical' && monthlyRainfall?.length === 12)
+        ? monthlyRainfall
+        : undefined,
       capex_inr: adjustedCapex,
       tank_capacity_litres: tankCapacityLitres,
+      roof_surface_type: roofSurfaceType || 'concrete',
       rainfall_reduction_percent: rainfallReductionPercent,
       tanker_rate_per_kl: tankerRatePerKl,
       annual_tanker_volume_litres: annualTankerVolumeLitres,
@@ -700,7 +1150,7 @@ export default function ROIDashboard() {
       borewell: Number(borewell) || 0,
       borewell_depth: Number(borewell) === 1 ? (Number(borewellDepth) || 0) : 0,
       soil_perm: Number(soilPerm) || 3,
-      coastal_km: Number(coastalKm) || 10,
+      coastal_km: Number.isFinite(Number(coastalKm)) ? Number(coastalKm) : 10,
       annual_rain_mm: rainMm,
       peak_day_mm: peakDay,
     }).catch(e => { console.error("ML Recommend Failed", e); return null; });
@@ -723,6 +1173,7 @@ export default function ROIDashboard() {
 
     Promise.all([mcPromise, recPromise, ...roiPromises])
       .then(([mcData, recData, ...roiDataArray]) => {
+        if (requestId !== roiRequestId.current) return;
         setMonteCarloResult(mcData);
         setMlRecommendResult(recData);
         
@@ -736,6 +1187,8 @@ export default function ROIDashboard() {
            );
            if (!hasFullHorizon) {
              setRoiResult(null);
+             setErrorStatus('The backend returned an incomplete ROI horizon; showing local estimates instead.');
+             setLoadingML(false);
              return;
            }
            const rows = [];
@@ -789,20 +1242,35 @@ export default function ROIDashboard() {
                  site_longitude: siteLongitude,
                  roof_surface_type: roofSurfaceType,
                  tank_capacity_litres: tankCapacityLitres,
+                 roof_polygon_points: roofPolygonPoints || null,
+                 polygon_geojson: polygonGeoJSON || (roofPolygonPoints && roofPolygonPoints.length >= 3 ? {
+                   type: 'Feature',
+                   geometry: {
+                     type: 'Polygon',
+                     coordinates: [[...roofPolygonPoints.map(([lat, lng]) => [lng, lat]), [roofPolygonPoints[0][1], roofPolygonPoints[0][0]]]]
+                   },
+                   properties: { gross_roof_area_sqm: tracedAreaProxy }
+                 } : null),
                }
              }).catch(e => console.error("Analysis save error", e));
            }
+        } else {
+          setRoiResult(null);
         }
         
-        if (!mcData && !recData) setErrorStatus("Failed to load AI predictions");
+        if (!mcData || !recData || roiDataArray.some((result) => !result)) {
+          setErrorStatus('Some backend analyses failed; local estimates are shown where available.');
+        }
         setLoadingML(false);
       })
       .catch((err) => {
+        if (requestId !== roiRequestId.current) return;
         console.error("Dashboard fetch error:", err);
         setErrorStatus("API connection failed. Using local estimations.");
         setLoadingML(false);
       });
-  }, [societyId, tracedAreaProxy, annualDemand, nonPotableDemandLitres, nonPotableDailyDemand, adjustedCapex, borewell, borewellDepth, soilPerm, coastalKm, monthlyRainfall, annualYield, effectiveAnnualYield, tankCapacityLitres, rainfallReductionPercent, annualTanker, annualTankerVolumeLitres, annualMunicipal, municipalTariffPerKl, roofSurfaceType, siteLatitude, siteLongitude]);
+    return cancelStaleRequest;
+  }, [societyId, tracedAreaProxy, annualDemand, nonPotableDemandLitres, nonPotableDailyDemand, adjustedCapex, borewell, borewellDepth, soilPerm, coastalKm, monthlyRainfall, rainfallSource, annualYield, effectiveAnnualYield, tankCapacityLitres, rainfallReductionPercent, annualTanker, annualTankerVolumeLitres, annualMunicipal, municipalTariffPerKl, roofSurfaceType, siteLatitude, siteLongitude, roofPolygonPoints, polygonGeoJSON]);
 
   // Use API result or fallback to local
   const chartData = roiResult?.chartData || localChartData.chartData;
@@ -826,6 +1294,27 @@ export default function ROIDashboard() {
     ?? chartData[chartData.length - 1]?.current
     ?? 0;
   const investmentSummary = localChartData.investmentSummary;
+  const annualAMC = adjustedCapex * 0.03;
+  const isSafetyFlagged = Boolean(mlRecommendResult?.safety_triggered);
+
+  const yearlyData = useMemo(() => {
+    return chartData.map((row, index) => {
+      const cumWithout = (row.current || 0) * 100000;
+      const cumWith = (row.withRWH || 0) * 100000;
+      const netBenefit = cumWithout - cumWith;
+      const prevNetBenefit = index > 0
+        ? ((chartData[index - 1].current || 0) - (chartData[index - 1].withRWH || 0)) * 100000
+        : 0;
+      const savings = index === 0 ? netBenefit : netBenefit - prevNetBenefit;
+      return {
+        year: row.year,
+        cumulativeWithoutRwh: cumWithout,
+        cumulativeWithRwh: cumWith,
+        savings: Math.max(0, savings),
+        netBenefit,
+      };
+    });
+  }, [chartData]);
   const featureLabels = {
     rooftop_area: 'Rooftop area provides collection potential',
     borewell: 'Existing borewell availability affects recharge options',
@@ -880,50 +1369,216 @@ export default function ROIDashboard() {
   ]);
 
   const handleDownloadReport = useCallback(() => {
-    const sysConfig = escapeHtml(mlRecommendResult?.config || 'Configuration Pending');
-    const sysConf = mlRecommendResult?.confidence ? ((mlRecommendResult.confidence) * 100).toFixed(1) : 'N/A';
-    const reportSocietyName = escapeHtml(societyName);
-    const reportExplanation = escapeHtml(
-      mlRecommendResult?.plain_language || 'Configuration recommended based on site hydrogeology.',
-    );
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>WaterWallet ML Report — ${reportSocietyName}</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 40px; color: #1a1a2e; }
-    h1 { color: #0f3460; border-bottom: 2px solid #0f3460; padding-bottom: 8px; }
-    h2 { color: #16213e; margin-top: 32px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
-    th { background: #0f3460; color: #fff; }
-    tr:nth-child(even) { background: #f4f6fb; }
-    .badge { display: inline-block; background: #16a34a; color: #fff; padding: 4px 12px; border-radius: 4px; font-weight: bold; }
-  </style>
-</head>
-<body>
-  <h1>💧 WaterWallet — AI/ML Decision Report</h1>
-  <p><strong>Society:</strong> ${reportSocietyName}</p>
-  <p><strong>Units:</strong> ${escapeHtml(flats)} flats · ${escapeHtml(occupants)} occupants/flat</p>
+    // Trigger direct print using our refined @media print stylesheet
+    window.print();
+  }, []);
 
-  <h2>1. ML Recommended System Configuration</h2>
-  <p><strong>System:</strong> <span class="badge">${sysConfig}</span> (${sysConf}% ML Confidence)</p>
-  <p><strong>Explanation:</strong> ${reportExplanation}</p>
+  // ─── Audit CSV Export ────────────────────────────────────────────────────────
+  const handleExportCSV = useCallback(() => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeSociety = (societyName || 'Society').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `waterwallet_audit_${safeSociety}_${timestamp}.csv`;
 
-  <h2>2. 1,000-Scenario Monte Carlo Simulation</h2>
-  <p><strong>Monte Carlo Typical Break-Even Year:</strong> ${monteCarloResult?.median_breakeven_year != null && monteCarloResult.median_breakeven_year <= ROI_HORIZON_YEARS ? `Year ${Math.ceil(monteCarloResult.median_breakeven_year)}` : `>${ROI_HORIZON_YEARS} years`}</p>
-  <p><strong>Never Break-Even Risk:</strong> ${monteCarloResult?.never_break_even_pct || 0}%</p>
-</body>
-</html>`;
+    const effectiveTankerTariffVal = (annualTankerVolumeLitres > 0)
+      ? (annualTanker * 100000) / (annualTankerVolumeLitres / 1000)
+      : 150.0;
 
-    const win = window.open('', '_blank');
-    if (!win) { alert('Please allow pop-ups to download the report.'); return; }
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    setTimeout(() => win.print(), 400);
-  }, [societyName, flats, occupants, mlRecommendResult, monteCarloResult]);
+    const csvRows = [
+      ['WATERWALLET COMPREHENSIVE RWH AUDIT REPORT'],
+      ['Generated At', new Date().toLocaleString('en-IN')],
+      ['Application', 'WaterWallet Decision-Support System (MMR)'],
+      [],
+      ['=== 1. SOCIETY & CATCHMENT PROFILE ==='],
+      ['Field', 'Value', 'Unit'],
+      ['Society Name', societyName || 'Residential Society', ''],
+      ['Pincode', pincode || 'N/A', ''],
+      ['Flats / Units', flats || 0, 'units'],
+      ['Occupants per Flat', occupants || 0, 'persons/flat'],
+      ['Total Estimated Population', (Number(flats) || 0) * (Number(occupants) || 0), 'persons'],
+      ['Gross Rooftop Catchment Area', Number(grossRoofArea).toFixed(1), 'm²'],
+      ['Usable Catchment Area (80% factor)', (Number(grossRoofArea) * ROOF_USABLE_FACTOR).toFixed(1), 'm²'],
+      ['Roof Surface Material', roofSurfaceType || 'Concrete (RCC)', ''],
+      ['Runoff Coefficient', ROOF_RUNOFF_COEFFICIENTS[roofSurfaceType] || 0.90, ''],
+      ['Annual Rainfall Baseline', Number(effectiveAnnualYield > 0 && grossRoofArea > 0 ? (effectiveAnnualYield / (grossRoofArea * ROOF_USABLE_FACTOR * 0.9)).toFixed(0) : 2200), 'mm/yr'],
+      [],
+      ['=== 2. WATER DEMAND & UTILITY BILLING ==='],
+      ['Field', 'Value', 'Unit'],
+      ['Daily Non-Potable Demand', nonPotableDailyDemand.toFixed(0), 'L/day'],
+      ['Annual Non-Potable Demand', (nonPotableDemandLitres / 1000).toFixed(1), 'kL/year'],
+      ['Annual Tanker Water Spend', (annualTanker * 100000).toFixed(0), 'INR/yr'],
+      ['Annual Tanker Water Volume', (annualTankerVolumeLitres / 1000).toFixed(1), 'kL/yr'],
+      ['Effective Tanker Water Tariff', effectiveTankerTariffVal.toFixed(2), 'INR/kL'],
+      ['Annual Municipal Water Spend', (annualMunicipal * 100000).toFixed(0), 'INR/yr'],
+      ['Municipal Water Tariff', municipalTariffPerKl.toFixed(2), 'INR/kL'],
+      [],
+      ['=== 3. RWH SYSTEM & TANK SIZING AUDIT ==='],
+      ['Field', 'Value', 'Unit'],
+      ['Selected Tank Capacity', tankSizerResult?.selected_candidate?.capacity_litres ? `${Number(tankSizerResult.selected_candidate.capacity_litres).toLocaleString()}` : `${tankCapacityLitres.toLocaleString()}`, 'Litres'],
+      ['Useful Harvested Water', tankSizerResult?.selected_candidate?.useful_water_litres ? Math.round(tankSizerResult.selected_candidate.useful_water_litres).toLocaleString() : (effectiveAnnualYield).toFixed(0), 'L/year'],
+      ['Annual Reliability Score', tankSizerResult?.selected_candidate?.reliability_percent ? `${tankSizerResult.selected_candidate.reliability_percent}%` : `${Math.min(100, Math.round((effectiveAnnualYield / (nonPotableDemandLitres || 1)) * 100))}%`, ''],
+      ['Recharge Pit Overflow', tankSizerResult?.selected_candidate?.recharge_overflow_litres ? Math.round(tankSizerResult.selected_candidate.recharge_overflow_litres).toLocaleString() : '0', 'L/year'],
+      ['Lost Overflow', tankSizerResult?.selected_candidate?.lost_overflow_litres ? Math.round(tankSizerResult.selected_candidate.lost_overflow_litres).toLocaleString() : '0', 'L/year'],
+      ['Estimated Capital Cost (Capex)', (capex * 100000).toFixed(0), 'INR'],
+      ['Estimated Annual Maintenance (AMC)', (annualAMC).toFixed(0), 'INR/yr'],
+      [],
+      ['=== 4. MACHINE LEARNING & HYDROGEOLOGY ==='],
+      ['Field', 'Value', 'Unit'],
+      ['ML Recommended Configuration', mlRecommendResult?.recommended_config || 'Storage-Only', ''],
+      ['ML Recommendation Confidence', mlRecommendResult?.confidence_pct ? `${mlRecommendResult.confidence_pct}%` : 'N/A', ''],
+      ['Tier 1 Safety Gate Status', isSafetyFlagged ? 'Flagged / Storage Only' : 'Safe for Recharge', ''],
+      ['Coastal Distance', `${coastalKm || 15}`, 'km'],
+      ['Borewell Presence', borewell ? 'Yes' : 'No', ''],
+      ['Borewell Depth', `${borewellDepth || 0}`, 'meters'],
+      ['Yield Source Mode', yieldSource === 'ml' ? 'Random Forest Regressor' : 'Physics Formula', ''],
+      ['Physics Annual Yield', `${(annualYield / 1000).toFixed(1)}`, 'kL/yr'],
+      ['ML Regressor Annual Yield', mlAnnualYield > 0 ? `${(mlAnnualYield / 1000).toFixed(1)}` : 'N/A', 'kL/yr'],
+      [],
+      ['=== 5. DETERMINISTIC 10-YEAR FINANCIAL TRAJECTORY ==='],
+      ['Year', 'Without RWH (Cumulative INR)', 'With RWH (Cumulative INR)', 'Net Annual Savings (INR)', 'Cumulative Net Benefit (INR)'],
+      ...(yearlyData.map(row => [
+        row.year,
+        Math.round(row.cumulativeWithoutRwh || 0),
+        Math.round(row.cumulativeWithRwh || 0),
+        Math.round(row.savings || 0),
+        Math.round(row.netBenefit || 0),
+      ])),
+      [],
+      ['=== 6. MONTE CARLO STOCHASTIC RISK AUDIT (1,000 SCENARIOS) ==='],
+      ['Metric', 'Value', 'Interpretation'],
+      ['Median Break-Even Year', monteCarloResult?.median_breakeven_year != null ? `Year ${Math.ceil(monteCarloResult.median_breakeven_year)}` : `>${ROI_HORIZON_YEARS} years`, 'P50 most likely break-even horizon'],
+      ['Optimistic Break-Even (P10)', monteCarloResult?.percentiles?.p10 != null ? `Year ${monteCarloResult.percentiles.p10}` : 'N/A', 'Top 10% high-rainfall scenario'],
+      ['Conservative Break-Even (P90)', monteCarloResult?.percentiles?.p90 != null ? `Year ${monteCarloResult.percentiles.p90}` : 'N/A', 'Worst 10% drought scenario'],
+      ['Never Break-Even Risk', `${monteCarloResult?.never_break_even_pct || 0}%`, 'Probability of not recovering capex within 10 years'],
+      ['Total Scenarios Simulated', monteCarloResult?.n_scenarios || 1000, 'Stochastic samples across historical P10-P90 rain'],
+    ];
+
+    const csvContent = csvRows
+      .map(row => row.map(escapeCsvCell).join(','))
+      .join('\r\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [
+    societyName, pincode, flats, occupants, grossRoofArea, roofSurfaceType,
+    effectiveAnnualYield, nonPotableDailyDemand, nonPotableDemandLitres,
+    annualTanker, annualTankerVolumeLitres,
+    annualMunicipal, municipalTariffPerKl, tankSizerResult, tankCapacityLitres,
+    capex, annualAMC, mlRecommendResult, isSafetyFlagged, coastalKm, borewell,
+    borewellDepth, yieldSource, annualYield, mlAnnualYield, yearlyData, monteCarloResult
+  ]);
+
+  // ─── Audit JSON Export ───────────────────────────────────────────────────────
+  const handleExportJSON = useCallback(() => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeSociety = (societyName || 'Society').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `waterwallet_audit_${safeSociety}_${timestamp}.json`;
+
+    const effectiveTankerTariffVal = (annualTankerVolumeLitres > 0)
+      ? (annualTanker * 100000) / (annualTankerVolumeLitres / 1000)
+      : 150.0;
+
+    const auditData = {
+      auditMetadata: {
+        tool: 'WaterWallet MMR RWH Decision-Support Engine',
+        version: '1.0.0',
+        generatedAt: new Date().toISOString(),
+        societyName: societyName || 'Residential Housing Society',
+        pincode: pincode || null,
+      },
+      societyProfile: {
+        flats: Number(flats) || 0,
+        occupantsPerFlat: Number(occupants) || 0,
+        totalPopulation: (Number(flats) || 0) * (Number(occupants) || 0),
+        dailyNonPotableDemandLitres: Math.round(nonPotableDailyDemand),
+        annualNonPotableDemandLitres: Math.round(nonPotableDemandLitres),
+      },
+      catchmentAndYield: {
+        grossRooftopAreaSqm: Number(grossRoofArea),
+        usableRooftopAreaSqm: Number(grossRoofArea) * ROOF_USABLE_FACTOR,
+        roofSurfaceType: roofSurfaceType || 'concrete',
+        runoffCoefficient: ROOF_RUNOFF_COEFFICIENTS[roofSurfaceType] || 0.90,
+        yieldSourceMode: yieldSource,
+        physicsAnnualYieldLitres: Math.round(annualYield),
+        mlRegressorAnnualYieldLitres: Math.round(mlAnnualYield || 0),
+        activeAnnualYieldLitres: Math.round(activeAnnualYield),
+        rainfallReductionScenarioPercent: rainfallReductionPercent,
+      },
+      utilityBillingAndTariffs: {
+        annualTankerSpendInr: Math.round(annualTanker * 100000),
+        annualTankerVolumeLitres: Math.round(annualTankerVolumeLitres),
+        effectiveTankerTariffPerKl: Number(effectiveTankerTariffVal.toFixed(2)),
+        annualMunicipalSpendInr: Math.round(annualMunicipal * 100000),
+        municipalTariffPerKl: Number(municipalTariffPerKl.toFixed(2)),
+      },
+      tankSizingAudit: tankSizerResult?.selected_candidate ? {
+        selectedCapacityLitres: Number(tankSizerResult.selected_candidate.capacity_litres),
+        usefulWaterLitresPerYear: Math.round(tankSizerResult.selected_candidate.useful_water_litres),
+        annualReliabilityPercent: tankSizerResult.selected_candidate.reliability_percent,
+        rechargeOverflowLitresPerYear: Math.round(tankSizerResult.selected_candidate.recharge_overflow_litres),
+        lostOverflowLitresPerYear: Math.round(tankSizerResult.selected_candidate.lost_overflow_litres),
+        selectionStatus: tankSizerResult.selection_status,
+        selectionReason: tankSizerResult.selection_reason,
+        paybackYears: tankSizerResult.selected_candidate.payback_years,
+      } : {
+        selectedCapacityLitres: tankCapacityLitres,
+        note: 'Default slider capacity; tank sizer not yet run for this session.',
+      },
+      mlRecommendationAndSafety: {
+        recommendedConfig: mlRecommendResult?.recommended_config || 'Storage-Only',
+        confidencePercent: mlRecommendResult?.confidence_pct || null,
+        tier1SafetyPassed: !isSafetyFlagged,
+        coastalDistanceKm: coastalKm,
+        borewellExists: Boolean(borewell),
+        borewellDepthMeters: borewellDepth,
+        shapFeatureContributions: mlRecommendResult?.shap_contributions || [],
+      },
+      deterministicFinancials: {
+        capexInr: Math.round(capex * 100000),
+        annualAmcInr: Math.round(annualAMC),
+        deterministicPaybackYears: currentPayback,
+        yearlyBreakdown: yearlyData.map(row => ({
+          year: row.year,
+          cumulativeWithoutRwhInr: Math.round(row.cumulativeWithoutRwh || 0),
+          cumulativeWithRwhInr: Math.round(row.cumulativeWithRwh || 0),
+          netSavingsInr: Math.round(row.savings || 0),
+          cumulativeNetBenefitInr: Math.round(row.netBenefit || 0),
+        })),
+      },
+      monteCarloRiskAnalysis: monteCarloResult ? {
+        medianBreakevenYear: monteCarloResult.median_breakeven_year,
+        meanBreakevenYear: monteCarloResult.mean_breakeven_year,
+        percentiles: monteCarloResult.percentiles,
+        neverBreakevenRiskPercent: monteCarloResult.never_break_even_pct,
+        totalScenarios: monteCarloResult.n_scenarios,
+        isSiteSpecific: monteCarloResult.is_site_specific,
+      } : null,
+    };
+
+    const jsonContent = JSON.stringify(auditData, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [
+    societyName, pincode, flats, occupants, nonPotableDailyDemand, nonPotableDemandLitres,
+    grossRoofArea, roofSurfaceType, yieldSource, annualYield, mlAnnualYield, activeAnnualYield,
+    rainfallReductionPercent, annualTanker, annualTankerVolumeLitres,
+    annualMunicipal, municipalTariffPerKl, tankSizerResult, tankCapacityLitres, mlRecommendResult,
+    isSafetyFlagged, coastalKm, borewell, borewellDepth, capex, annualAMC, currentPayback,
+    yearlyData, monteCarloResult
+  ]);
 
   const kpiCards = [
     {
@@ -965,14 +1620,34 @@ export default function ROIDashboard() {
             Bring together project cost, savings, payback period, and implementation risks before your society makes a decision.
           </p>
         </div>
-        <button
-          id="download-pdf-btn"
-          onClick={handleDownloadReport}
-          className="ww-secondary-button flex items-center justify-center gap-2 px-5 py-2.5 text-sm"
-        >
-          <Download size={15} />
-          Download ML PDF Report
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            id="download-pdf-btn"
+            onClick={handleDownloadReport}
+            className="ww-secondary-button flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold"
+          >
+            <Download size={14} />
+            Print / PDF Report
+          </button>
+          <button
+            id="export-csv-btn"
+            onClick={handleExportCSV}
+            className="ww-secondary-button flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            title="Export complete society, catchment, sizing, and cashflow audit to CSV"
+          >
+            <FileSpreadsheet size={14} className="text-emerald-600" />
+            Export Audit CSV
+          </button>
+          <button
+            id="export-json-btn"
+            onClick={handleExportJSON}
+            className="ww-secondary-button flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            title="Export full machine-readable audit report to JSON"
+          >
+            <FileCode size={14} className="text-blue-600" />
+            Export Audit JSON
+          </button>
+        </div>
       </div>
       <div className="flex flex-wrap gap-2 mt-4">
         {[
@@ -1018,6 +1693,91 @@ export default function ROIDashboard() {
       {/* Self-Sufficiency Badge */}
       <SelfSufficiencyBadge annualYield={effectiveAnnualYield} annualDemand={nonPotableDemandLitres} />
 
+      {/* ─── ML vs Physics Yield Source Toggle ─── */}
+      <div className="ww-card p-5 border border-indigo-100">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Cpu size={16} className="text-indigo-600" />
+              <p className="text-sm font-bold text-slate-800">Annual Yield Source</p>
+            </div>
+            <p className="text-xs text-slate-500 max-w-md leading-relaxed">
+              Choose between the physics-based formula (area × rainfall × runoff) and the Random
+              Forest ML regressor trained on site characteristics. All financial metrics update
+              automatically.
+            </p>
+          </div>
+          {/* Segmented toggle */}
+          <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-xl border border-slate-200 self-start shrink-0">
+            <button
+              type="button"
+              id="yield-source-physics"
+              onClick={() => setYieldSource('physics')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                yieldSource === 'physics'
+                  ? 'bg-white text-indigo-700 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Physics Formula
+            </button>
+            <button
+              type="button"
+              id="yield-source-ml"
+              onClick={() => hasMlYield && setYieldSource('ml')}
+              disabled={!hasMlYield}
+              title={hasMlYield ? 'Use Random Forest ML regressor yield' : 'Trace rooftop in Map Studio to load ML yield'}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                yieldSource === 'ml'
+                  ? 'bg-white text-indigo-700 shadow-sm'
+                  : hasMlYield
+                  ? 'text-slate-600 hover:text-slate-900'
+                  : 'text-slate-300 cursor-not-allowed'
+              }`}
+            >
+              ML Regressor
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+          <div className="rounded-xl bg-indigo-50 border border-indigo-100 p-3">
+            <p className="text-xs text-slate-500">Physics Yield (annual)</p>
+            <p className="font-bold text-slate-800 mt-1">
+              {annualYield > 0 ? `${(annualYield / 1000).toFixed(0)} kL` : '—'}
+            </p>
+          </div>
+          <div className={`rounded-xl border p-3 ${hasMlYield ? 'bg-violet-50 border-violet-100' : 'bg-slate-50 border-slate-100'}`}>
+            <p className="text-xs text-slate-500">ML Regressor Yield (annual)</p>
+            <p className={`font-bold mt-1 ${hasMlYield ? 'text-violet-700' : 'text-slate-400'}`}>
+              {hasMlYield ? `${(mlAnnualYield / 1000).toFixed(0)} kL` : 'Not loaded'}
+            </p>
+          </div>
+          {mlDeviationPct != null && (
+            <div className={`rounded-xl border p-3 ${
+              Math.abs(Number(mlDeviationPct)) <= 10
+                ? 'bg-green-50 border-green-100'
+                : 'bg-amber-50 border-amber-100'
+            }`}>
+              <p className="text-xs text-slate-500">ML vs Physics deviation</p>
+              <p className={`font-bold mt-1 ${
+                Math.abs(Number(mlDeviationPct)) <= 10 ? 'text-green-700' : 'text-amber-700'
+              }`}>
+                {Number(mlDeviationPct) >= 0 ? '+' : ''}{mlDeviationPct}%
+              </p>
+            </div>
+          )}
+        </div>
+
+        {yieldSource === 'ml' && hasMlYield && (
+          <p className="mt-3 text-xs text-violet-800 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+            <strong>ML Regressor active:</strong> All charts, payback periods, and financial totals are
+            computed using the {(mlAnnualYield / 1000).toFixed(0)} kL/yr ML estimate. Switch back to
+            Physics Formula to compare scenarios.
+          </p>
+        )}
+      </div>
+
       {/* Daily historical tank sizing */}
       <section className="bg-cyan-50 rounded-2xl shadow-sm p-6 border border-cyan-200">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -1038,12 +1798,16 @@ export default function ROIDashboard() {
         {tankSizerError && <p className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">{tankSizerError}</p>}
         {tankSizerResult?.selected_candidate && (
           <>
-          {(!tankSizerResult.reliability_target_met || tankSizerResult.selection_status !== 'meets_reliability_target') && (
+          {tankSizerResult.selection_status === 'optimal_diminishing_returns_knee' ? (
+            <p className="mt-4 text-sm text-teal-800 bg-teal-50 border border-teal-200 rounded-lg p-3">
+              ✓ {tankSizerResult.selection_reason}
+            </p>
+          ) : (!tankSizerResult.reliability_target_met || tankSizerResult.selection_status !== 'meets_reliability_target') ? (
             <p className="mt-4 text-sm text-amber-800 bg-amber-100 border border-amber-200 rounded-lg p-3">
               {tankSizerResult.selection_reason || `No tested tank reaches the ${tankSizerResult.reliability_target_percent}% reliability target.`}
               {' '}Showing the best available non-zero capacity instead of the 0 L baseline.
             </p>
-          )}
+          ) : null}
           <div className="mt-5 grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
             {[
               [Number(tankSizerResult.selected_candidate.capacity_litres) === 0 ? 'Do nothing baseline' : 'Selected capacity', `${Number(tankSizerResult.selected_candidate.capacity_litres).toLocaleString()} L`],
@@ -1063,6 +1827,26 @@ export default function ROIDashboard() {
             Demand used: {Math.round(nonPotableDailyDemand).toLocaleString()} L/day non-potable
             ({NON_POTABLE_LPCD} LPCD per occupant; source range 60–70 LPCD).
           </p>
+
+          {/* Apply Recommended Tank to ROI Simulation */}
+          <div className="mt-4 flex items-center gap-3 flex-wrap">
+            <button
+              type="button"
+              onClick={handleApplyRecommendedTank}
+              disabled={!tankSizerResult?.selected_candidate?.capacity_litres}
+              className="inline-flex items-center gap-2 bg-cyan-700 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-cyan-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <Droplets size={14} />
+              Apply Recommended Tank to ROI Simulation
+            </button>
+            {tankApplied && (
+              <span className="text-xs text-cyan-800 bg-cyan-100 border border-cyan-200 px-3 py-1.5 rounded-xl font-semibold">
+                ✓ Tank set to {Number(tankSizerResult.selected_candidate.capacity_litres).toLocaleString()} L — charts updated
+              </span>
+            )}
+          </div>
+          {/* Tank Visualizer */}
+          <TankVisualizer tankSizerResult={tankSizerResult} nonPotableDailyDemand={nonPotableDailyDemand} />
           </>
         )}
         <p className="text-xs text-slate-500 mt-4">
@@ -1185,7 +1969,7 @@ export default function ROIDashboard() {
         coastalKm={coastalKm}
         onCoastalKmChange={setCoastalKm}
         capexRatePerSqm={capexRatePerSqm}
-        onCapexRateChange={setCapexRatePerSqm}
+        onCapexRateChange={handleCapexRateChange}
         tankCapacityLitres={tankCapacityLitres}
         onTankCapacityChange={setTankCapacityLitres}
         rainfallReductionPercent={rainfallReductionPercent}
@@ -1309,19 +2093,17 @@ export default function ROIDashboard() {
             1,000-Scenario Monte Carlo Payback Probability
             <span className="text-xs font-normal text-slate-400">(Sampling 15-Yr P10–P90 Rainfall Percentiles)</span>
           </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            This is a probabilistic range around the historical baseline,
-            capped by eligible non-potable demand. Its typical case can differ
-            from the deterministic payback above.
+          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+            Stochastic risk simulation incorporating seasonal rainfall concentration and finite tank storage ({tankCapacityLitres.toLocaleString()} L).
+            Because monsoon inflows exceed tank capacity while dry months have minimal rainfall, excess water spills as overflow.
+            This physical storage constraint makes the typical break-even here more conservative than the unconstrained deterministic ceiling above.
           </p>
         </div>
 
         {/* is_site_specific is the stable contract; scenarios_used remains diagnostic metadata. */}
         {monteCarloResult?.is_site_specific === false && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            Monte Carlo is using a generic Thane-like rainfall fallback because the
-            percentile dataset is unavailable. These results are not site-specific
-            calibrated estimates.
+            Monte Carlo is using regional historical rainfall percentiles (Thane/MMR) because site-specific rainfall has not been traced in Map Studio. Complete rooftop tracing in Phase 2 for site-calibrated estimates.
           </div>
         )}
 
@@ -1399,6 +2181,36 @@ export default function ROIDashboard() {
               </div>
             );
           })}
+        </div>
+
+        {/* Yield Harmonization & Model Methodology Notice */}
+        <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50/70 p-4 text-xs text-blue-900 leading-relaxed">
+          <div className="flex items-start gap-2.5">
+            <HelpCircle size={18} className="text-blue-600 shrink-0 mt-0.5" />
+            <div className="space-y-1.5 w-full">
+              <p className="font-bold text-blue-950 text-sm">
+                Yield Harmonization: Theoretical Ceiling vs. Storage-Constrained Reality
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                <div className="bg-white/80 rounded-lg p-3 border border-blue-100">
+                  <span className="font-bold text-blue-900 block mb-1">
+                    Deterministic Payback ({currentPayback}): Theoretical Unconstrained Ceiling
+                  </span>
+                  <p className="text-slate-600">
+                    Assumes 100% of harvestable annual rainwater is utilized up to the eligible non-potable annual demand ({Math.round(nonPotableDemandLitres).toLocaleString()} L). It models an ideal operational state where seasonal buffers or continuous recharge prevent monsoon spillage.
+                  </p>
+                </div>
+                <div className="bg-white/80 rounded-lg p-3 border border-blue-100">
+                  <span className="font-bold text-blue-900 block mb-1">
+                    Monte Carlo Payback ({monteCarloResult?.median_breakeven_year ? `Year ${monteCarloResult.median_breakeven_year}` : 'Storage-Gated'}): Finite Storage Reality
+                  </span>
+                  <p className="text-slate-600">
+                    Enforces a physical monthly tank water balance with a {tankCapacityLitres.toLocaleString()} L tank. Because ~85% of MMR precipitation is concentrated in 4 monsoon months, tank overflows result in uncaptured water, producing a more conservative payback timeline.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <BreakEvenChart chartData={chartData} breakEvens={breakEvens} />

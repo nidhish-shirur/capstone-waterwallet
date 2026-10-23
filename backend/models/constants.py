@@ -5,6 +5,10 @@
 # Litres Per Capita Per Day (residential, with flush toilet + bath)
 IS_LPCD: float = 135.0
 
+# Disaggregated domestic demand components (CPHEEO / BIS urban norms)
+POTABLE_LPCD: float = 70.0       # Drinking, cooking, bathing, personal hygiene
+NON_POTABLE_LPCD: float = 65.0   # Toilet flushing, gardening, car washing, cleaning
+
 # Demand safety buffer (10 % above IS baseline)
 DEMAND_BUFFER_FACTOR: float = 1.10
 

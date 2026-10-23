@@ -23,7 +23,7 @@ async def catchment_calculate(payload: CatchmentRequest) -> CatchmentResponse:
     Fetch real rainfall data from Open-Meteo for the given lat/lon,
     then calculate annual and monthly rainwater yield for the roof area.
     """
-    monthly_rainfall = await fetch_monthly_rainfall(payload.latitude, payload.longitude)
+    monthly_rainfall, source = await fetch_monthly_rainfall(payload.latitude, payload.longitude)
     annual_rainfall = sum(monthly_rainfall)
 
     monthly_yield = [
@@ -43,13 +43,15 @@ async def catchment_calculate(payload: CatchmentRequest) -> CatchmentResponse:
         monthly_yield_litres=[round(y, 2) for y in monthly_yield],
         historical_start_year=RAINFALL_START_YEAR,
         historical_end_year=RAINFALL_END_YEAR,
+        source=source,
+        fallback_used=source != "open_meteo_archive",
     )
 
 
 @router.post("/forecast", response_model=RainfallForecastResponse)
 async def catchment_forecast(payload: RainfallForecastRequest) -> RainfallForecastResponse:
     """Forecast the next rainfall months with seasonal Auto-SARIMA."""
-    history = await fetch_monthly_rainfall_history(payload.latitude, payload.longitude)
+    history, history_source = await fetch_monthly_rainfall_history(payload.latitude, payload.longitude)
     try:
         forecast = forecast_monthly_rainfall(history, payload.periods)
     except ValueError as exc:
@@ -77,6 +79,8 @@ async def catchment_forecast(payload: RainfallForecastRequest) -> RainfallForeca
         annual_yield_litres=round(sum(monthly_yield), 2),
         monthly_yield_litres=[round(value, 2) for value in monthly_yield],
         source="auto_sarima",
+        history_source=history_source,
+        fallback_used=history_source != "open_meteo_archive",
         model_order=forecast["model_order"],
         training_months=forecast["training_months"],
         confidence_intervals=forecast["confidence_intervals"],

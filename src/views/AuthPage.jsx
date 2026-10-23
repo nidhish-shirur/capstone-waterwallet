@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Droplets, AlertCircle } from 'lucide-react';
+import { Droplets, AlertCircle, ArrowRight, UserCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 
 export default function AuthPage() {
-  const { user, login, register, loading } = useAuth();
+  const { user, login, register, loading, continueAsGuest } = useAuth();
+  const navigate = useNavigate();
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,6 +19,11 @@ export default function AuthPage() {
   if (user) {
     return <Navigate to="/virtual-meter" replace />;
   }
+
+  const handleContinueAsGuest = () => {
+    continueAsGuest();
+    navigate('/virtual-meter');
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -89,11 +95,34 @@ export default function AuthPage() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 transition-colors disabled:opacity-50"
+            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 transition-colors disabled:opacity-50 cursor-pointer"
           >
             {isSubmitting ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
           </button>
         </form>
+
+        <div className="relative my-6">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-slate-200" />
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-white px-3 text-slate-400 font-semibold tracking-wider">or</span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleContinueAsGuest}
+          className="w-full flex items-center justify-between py-3.5 px-4 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-600 transition-all cursor-pointer shadow-sm group"
+          title="Directly explore Phase 1 without an account"
+        >
+          <div className="flex items-center gap-2.5">
+            <UserCheck size={18} className="text-slate-500 group-hover:text-blue-600 transition-colors" />
+            <span className="font-semibold text-slate-800 group-hover:text-slate-950">Continue as guest</span>
+            <span className="text-xs text-slate-400 group-hover:text-slate-500 font-normal">(without an account)</span>
+          </div>
+          <ArrowRight size={16} className="text-slate-400 group-hover:translate-x-0.5 group-hover:text-blue-600 transition-all" />
+        </button>
 
         <div className="text-center mt-6">
           <button

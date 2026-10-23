@@ -7,6 +7,15 @@
 export const IS_LPCD = 135;
 
 /**
+ * Disaggregated domestic demand components (CPHEEO / BIS urban norms).
+ * Potable: Drinking, cooking, bathing, ablution.
+ * Non-potable: Toilet flushing, gardening, car washing, floor cleaning.
+ * Rainwater harvesting specifically targets the non-potable demand.
+ */
+export const POTABLE_LPCD = 70;
+export const NON_POTABLE_LPCD = 65;
+
+/**
  * Unaccounted-For Water (UFW) distribution loss factor.
  * Adds 15% on top of occupied demand to model pipe leakage,
  * metering error, and unregistered connections — per CPHEEO norms.
@@ -40,23 +49,26 @@ export const SEASONAL_WEIGHTS = [0.9, 0.9, 1.1, 1.2, 1.2, 0.9, 0.8, 0.8, 0.9, 1.
 // ---------------------------------------------------------------------------
 
 /**
- * Calculate the full, authoritative daily water demand for a society.
+ * Calculate the full, authoritative daily water demand for a society,
+ * including potable (70 LPCD) and non-potable (65 LPCD) disaggregation.
  *
  * Formula (applied in strict sequence):
  *   1. base          = num_flats × occupants_per_flat × IS_LPCD
  *   2. afterUFW      = base × (1 + UFW_LOSS_FACTOR)             [if includeLosses]
  *   3. adjustedDemand = afterUFW × DEMAND_BUFFER_FACTOR         [peak-hour buffer]
+ *   4. potableDemand = adjustedDemand × (POTABLE_LPCD / IS_LPCD)
+ *   5. nonPotableDemand = adjustedDemand - potableDemand
  *
  * This function is the canonical implementation. VirtualMeter.jsx must call
  * this and push the result into WaterWalletContext so that every downstream
- * consumer (ROI Dashboard, report generator) uses the same figure.
+ * consumer (ROI Dashboard, tank sizer) uses the same figure.
  *
  * @param {object} params
  * @param {number} params.numFlats              - Number of residential units
  * @param {number} params.occupantsPerFlat      - Average occupants per unit
  * @param {number} [params.lpcd=IS_LPCD]        - Litres per capita per day override
  * @param {boolean} [params.includeLosses=true] - Whether to apply UFW factor
- * @returns {{ baseDemand: number, adjustedDemand: number }}
+ * @returns {{ baseDemand: number, adjustedDemand: number, potableDemand: number, nonPotableDemand: number, basePotable: number, baseNonPotable: number, potableLpcd: number, nonPotableLpcd: number }}
  */
 export function calculateCanonicalDemand({
   numFlats,
@@ -67,6 +79,25 @@ export function calculateCanonicalDemand({
   const totalOccupants = Math.floor(numFlats * occupantsPerFlat);
   const base           = totalOccupants * lpcd;
   const afterUFW       = includeLosses ? base * (1 + UFW_LOSS_FACTOR) : base;
-  const adjustedDemand = Math.round(afterUFW * DEMAND_BUFFER_FACTOR);
-  return { baseDemand: Math.round(base), adjustedDemand };
+  const roundHalfUp = (value) => Math.floor(value + 0.5);
+  const adjustedDemand = roundHalfUp(afterUFW * DEMAND_BUFFER_FACTOR);
+
+  // Potable vs Non-Potable disaggregation
+  const potableRatio = POTABLE_LPCD / IS_LPCD; // ~70/135
+  const potableDemand = roundHalfUp(adjustedDemand * potableRatio);
+  const nonPotableDemand = adjustedDemand - potableDemand;
+
+  const basePotable = totalOccupants * POTABLE_LPCD;
+  const baseNonPotable = totalOccupants * NON_POTABLE_LPCD;
+
+  return {
+    baseDemand: roundHalfUp(base),
+    adjustedDemand,
+    potableDemand,
+    nonPotableDemand,
+    basePotable: roundHalfUp(basePotable),
+    baseNonPotable: roundHalfUp(baseNonPotable),
+    potableLpcd: POTABLE_LPCD,
+    nonPotableLpcd: NON_POTABLE_LPCD,
+  };
 }

@@ -21,9 +21,11 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
+      const hadToken = !!localStorage.getItem("access_token");
       localStorage.removeItem("access_token");
-      // Could dispatch an event or redirect here, but we'll let the context handle it
-      window.dispatchEvent(new Event("auth:unauthorized"));
+      if (hadToken) {
+        window.dispatchEvent(new Event("auth:unauthorized"));
+      }
     }
     return Promise.reject(error);
   }

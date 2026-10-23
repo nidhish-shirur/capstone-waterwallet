@@ -8,7 +8,7 @@
 
 ## About
 
-WaterWallet is a capstone proof of concept for residential housing societies in the Mumbai Metropolitan Region. It brings together society demand data, tanker and municipal billing history, map-derived rooftop area, location-specific rainfall, rainwater-harvesting recommendations, and ROI analysis in one workflow.
+WaterWallet is a capstone project for residential housing societies in the Mumbai Metropolitan Region. It brings together society demand data, tanker and municipal billing history, map-derived rooftop area, location-specific rainfall, rainwater-harvesting recommendations, and ROI analysis in one workflow.
 
 The application is designed for feasibility screening and committee decision support. Its calculations and recommendations help users ask better questions before commissioning detailed civil or hydrogeological engineering work; they are not a substitute for a final site design or regulatory approval.
 
@@ -56,7 +56,7 @@ The application is designed for feasibility screening and committee decision sup
 
 ### External services and data
 
-- **Open-Meteo Archive API:** Rainfall and daily precipitation are fetched for 2010–2024. Monthly aggregation is used for yield estimation; daily resolution is used for tank sizing.
+- **Open-Meteo Archive API:** Rainfall and daily precipitation use a rolling 15-complete-calendar-year window. Monthly aggregation is used for yield estimation; daily resolution is used for tank sizing. Monthly catchment and forecast responses identify when regional fallback data is used.
 - **Groq API (optional):** Natural-language water advisories.
 - **Esri World Imagery tiles:** Satellite imagery displayed by Map Studio.
 - **Bundled model artifacts:** Random Forest classifier and yield model files under [`backend/ml_models/`](./backend/ml_models/).
@@ -146,7 +146,7 @@ DATABASE_URL=postgresql+psycopg2://waterwallet:password@localhost:5432/waterwall
 GROQ_API_KEY=
 GROQ_MODEL=openai/gpt-oss-20b
 
-# Replace this before enabling authentication in a deployed environment.
+# Set a strong, unique secret before deploying the authenticated application.
 JWT_SECRET_KEY=replace-with-a-long-random-secret
 JWT_ALGORITHM=HS256
 JWT_EXPIRE_MINUTES=1440
@@ -266,7 +266,7 @@ python -m unittest discover -s tests
 
 ## Current Limitations
 
-- Authentication routes and protected-route UI are present in the codebase but disabled in the active application.
+- Login and protected frontend routes are active, and society routes enforce bearer-token ownership. Calculation endpoints are not uniformly authenticated; do not expose the API publicly until route-level authorization is reviewed.
 - Normal society CRUD currently uses a temporary in-memory store; database read-only loader routes are separate.
 - The advisory endpoint requires `GROQ_API_KEY` and network access; it is not required for the core calculations.
 - External rainfall, satellite-tile, and AI services can fail or be rate-limited.
@@ -277,7 +277,7 @@ See [`POC_REPORT.md`](./POC_REPORT.md) for the evidence-based scope, known gaps,
 
 ## Roadmap
 
-- Re-enable and fully test authentication and authorization.
+- Apply consistent authentication and authorization to calculation endpoints before public deployment.
 - Replace temporary in-memory CRUD with complete transactional database persistence.
 - Add frontend component, API integration, and end-to-end tests.
 - Expand ML training data and publish model validation metrics.

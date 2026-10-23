@@ -24,14 +24,20 @@ const MONTHS = [
 const currentYear = new Date().getFullYear();
 const YEARS = Array.from({ length: 4 }, (_, i) => String(currentYear - i));
 
-// ─── Pre-filled dummy billing rows (summer months showing high tanker usage)
+// ─── Pre-filled dummy billing rows (1 year of logs: Jan to Dec)
 const defaultBillingRows = [
-  { id: 1, month: 'April',    year: '2025', bill: '18500', tankers: 14, costPerTanker: '1500', tankerCapacity: 10000 },
-  { id: 2, month: 'May',      year: '2025', bill: '21200', tankers: 18, costPerTanker: '1500', tankerCapacity: 10000 },
-  { id: 3, month: 'June',     year: '2025', bill: '19800', tankers: 11, costPerTanker: '1600', tankerCapacity: 10000 },
-  { id: 4, month: 'March',    year: '2025', bill: '15300', tankers: 7,  costPerTanker: '1400', tankerCapacity: 10000 },
-  { id: 5, month: 'February', year: '2025', bill: '12800', tankers: 4,  costPerTanker: '1400', tankerCapacity: 10000 },
-  { id: 6, month: 'January',  year: '2025', bill: '13500', tankers: 3,  costPerTanker: '1400', tankerCapacity: 10000 },
+  { id: 1,  month: 'January',   year: '2025', bill: '14200', tankers: 16, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 2,  month: 'February',  year: '2025', bill: '14500', tankers: 18, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 3,  month: 'March',     year: '2025', bill: '15800', tankers: 22, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 4,  month: 'April',     year: '2025', bill: '17200', tankers: 24, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 5,  month: 'May',       year: '2025', bill: '18500', tankers: 25, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 6,  month: 'June',      year: '2025', bill: '16900', tankers: 21, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 7,  month: 'July',      year: '2025', bill: '14000', tankers: 15, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 8,  month: 'August',    year: '2025', bill: '13800', tankers: 15, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 9,  month: 'September', year: '2025', bill: '14100', tankers: 16, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 10, month: 'October',   year: '2025', bill: '15200', tankers: 19, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 11, month: 'November',  year: '2025', bill: '14800', tankers: 20, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 12, month: 'December',  year: '2025', bill: '14400', tankers: 17, costPerTanker: '1500', tankerCapacity: 10000 },
 ];
 
 // ─── Toggle Switch ──────────────────────────────────────────────────────────
@@ -68,12 +74,17 @@ export default function VirtualMeter() {
     setTotalTankerVolume,
     setBillingMonths,
     setAnnualDemand,
+    setPotableDemand,
+    setNonPotableDemand,
     setEstimatedCapex,
     setAnnualYield,
     setMonthlyRainfall,
     setGrossRoofArea,
     setSiteLatitude,
     setSiteLongitude,
+    setRoofPolygonPoints,
+    setPolygonGeoJSON,
+    setTankCapacityLitres,
     societyName: ctxSocietyName,
     flats: ctxFlats,
     occupants: ctxOccupants,
@@ -116,7 +127,19 @@ export default function VirtualMeter() {
   //   2. afterAmenities = base × (1 + amenity multipliers)
   //   3. afterUFW      = afterAmenities × 1.15  [if includeLosses]
   //   4. adjustedDemand = afterUFW × 1.10        [peak-demand buffer, always applied]
-  const { baseDemand, adjustedDemand } = useMemo(() => {
+  // ── Live demand calculation — delegates to the canonical formula in waterConstants
+  // Layers applied in sequence:
+  //   1. baseDemand    = flats × occupants × IS_LPCD
+  //   2. afterUFW      = base × 1.15  [if includeLosses]
+  //   3. adjustedDemand = afterUFW × 1.10 [peak-demand buffer, always applied]
+  //   4. potableDemand = 70 LPCD proportional share
+  //   5. nonPotableDemand = 65 LPCD proportional share (RWH Target)
+  const {
+    baseDemand,
+    adjustedDemand,
+    potableDemand,
+    nonPotableDemand,
+  } = useMemo(() => {
     return calculateCanonicalDemand({
       numFlats: Number(flats),
       occupantsPerFlat: Number(occupants),
@@ -175,26 +198,32 @@ export default function VirtualMeter() {
       setTotalMunicipal(Number(meteredBill || 0) * m);
       setTotalTankerVolume(Number(meteredTankerVolume || 0) * m);
       setBillingMonths(12);
-      setAnnualDemand(Number(meteredConsumption || 0) * m);
+      const meteredAnnualDemand = Number(meteredConsumption || 0) * m;
+      setAnnualDemand(meteredAnnualDemand);
+      setPotableDemand(Math.round(meteredAnnualDemand * (70 / 135)));
+      setNonPotableDemand(Math.round(meteredAnnualDemand * (65 / 135)));
     } else {
       setTotalTankerSpend(totalTankerSpend);
       setTotalMunicipal(totalMunicipal);
       setTotalTankerVolume(totalTankerVolume);
       setBillingMonths(billingRows.length || 1);
       setAnnualDemand(backendDemand);
+      setPotableDemand(potableDemand * 365);
+      setNonPotableDemand(nonPotableDemand * 365);
     }
   }, [
     societyName, flats, occupants, pincode, roofSurfaceType, totalTankerSpend, totalMunicipal,
     billingRows.length, backendDemand, useMeteredData,
     meteredFrequency, meteredConsumption, meteredBill, meteredTankerVolume, totalTankerVolume,
-    setAnnualDemand, setBillingMonths, setCtxFlats, setCtxOccupants, setCtxPincode, setCtxRoofSurfaceType, setCtxSocietyName, setTotalMunicipal, setTotalTankerSpend, setTotalTankerVolume
+    potableDemand, nonPotableDemand,
+    setAnnualDemand, setBillingMonths, setCtxFlats, setCtxOccupants, setCtxPincode, setCtxRoofSurfaceType, setCtxSocietyName, setNonPotableDemand, setPotableDemand, setTotalMunicipal, setTotalTankerSpend, setTotalTankerVolume
   ]);
 
   // ── Row handlers
   const addRow = () => {
     setBillingRows((prev) => [
       ...prev,
-      { id: ++nextId, month: 'July', year: '2025', bill: '', tankers: 0, costPerTanker: '1500', tankerCapacity: 10000 },
+      { id: ++nextId, month: 'July', year: String(currentYear), bill: '', tankers: 0, costPerTanker: '1500', tankerCapacity: 10000 },
     ]);
   };
 
@@ -251,6 +280,15 @@ export default function VirtualMeter() {
           }
           if (Number.isFinite(computed.site_latitude)) setSiteLatitude(computed.site_latitude);
           if (Number.isFinite(computed.site_longitude)) setSiteLongitude(computed.site_longitude);
+          if (computed.tank_capacity_litres != null) setTankCapacityLitres(Number(computed.tank_capacity_litres));
+          if (Array.isArray(computed.roof_polygon_points) && computed.roof_polygon_points.length >= 3) {
+            setRoofPolygonPoints(computed.roof_polygon_points);
+          } else if (computed.polygon_geojson?.geometry?.coordinates?.[0]?.length >= 4) {
+            const rawCoords = computed.polygon_geojson.geometry.coordinates[0];
+            const pts = rawCoords.slice(0, -1).map(([lng, lat]) => [lat, lng]);
+            setRoofPolygonPoints(pts);
+          }
+          if (computed.polygon_geojson) setPolygonGeoJSON(computed.polygon_geojson);
         })
         .catch((err) => {
           console.error("Error loading society:", err);
@@ -259,7 +297,7 @@ export default function VirtualMeter() {
           setIsLoading(false);
         });
     }
-  }, [societyId, setAnnualDemand, setAnnualYield, setEstimatedCapex, setGrossRoofArea, setMonthlyRainfall, setSiteLatitude, setSiteLongitude]);
+  }, [societyId, setAnnualDemand, setAnnualYield, setEstimatedCapex, setGrossRoofArea, setMonthlyRainfall, setSiteLatitude, setSiteLongitude, setRoofPolygonPoints, setPolygonGeoJSON, setTankCapacityLitres]);
 
   // ── Save/Update society data and billing rows ──
   const handleSave = async () => {
@@ -438,13 +476,44 @@ export default function VirtualMeter() {
               <div className="flex items-center gap-2">
                 <TrendingUp size={16} className="text-amber-600" />
                 <div>
-                  <p className="text-sm font-semibold text-amber-800">Adjusted Daily Demand</p>
+                  <p className="text-sm font-semibold text-amber-800">Adjusted Total Daily Demand</p>
                   <p className="text-xs text-amber-600">
-                    Includes 10% peak buffer headroom{includeLosses ? ' and 15% UFW distribution losses' : ''}
+                    Includes 10% peak buffer headroom{includeLosses ? ' and 15% UFW distribution losses' : ''} (135 LPCD standard)
                   </p>
                 </div>
               </div>
               <p className="text-xl font-extrabold text-amber-700">{adjustedDemand.toLocaleString('en-IN')} L/day</p>
+            </div>
+          </div>
+
+          {/* Disaggregated Potable (70 LPCD) vs Non-Potable (65 LPCD) Demand Breakdown */}
+          <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {/* Potable */}
+            <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-3.5">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold text-sky-800 uppercase tracking-wider">Potable Demand</span>
+                <span className="text-[11px] font-bold bg-sky-100 text-sky-700 px-2 py-0.5 rounded-full">70 LPCD (51.9%)</span>
+              </div>
+              <p className="text-lg font-extrabold text-sky-900">{potableDemand.toLocaleString('en-IN')} L / day</p>
+              <p className="text-[11px] text-sky-700 mt-1">
+                Drinking, cooking, bathing, and food preparation. Requires municipal purification standards.
+              </p>
+            </div>
+
+            {/* Non-Potable (RWH Target) */}
+            <div className="rounded-xl border border-teal-300 bg-teal-50/90 p-3.5 shadow-sm">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold text-teal-800 uppercase tracking-wider flex items-center gap-1">
+                  Non-Potable Demand
+                </span>
+                <span className="text-[11px] font-bold bg-teal-600 text-white px-2 py-0.5 rounded-full">
+                  65 LPCD (48.1%) · RWH Target
+                </span>
+              </div>
+              <p className="text-lg font-extrabold text-teal-900">{nonPotableDemand.toLocaleString('en-IN')} L / day</p>
+              <p className="text-[11px] text-teal-800 mt-1 font-medium">
+                Toilet flushing, gardening, cleaning, and car washing. <strong>Directly offset by rooftop rainwater harvesting</strong> without expensive potable treatment.
+              </p>
             </div>
           </div>
 

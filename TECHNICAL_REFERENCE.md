@@ -156,10 +156,10 @@ avgMonthly       = (totalTankerSpend + totalMunicipal) / billingRows.length
 | Usable area deduction | 20% obstacle factor applied to gross traced area |
 | Yield calculation | `usableArea × annualRainfall × runoffCoeff` |
 | Parametric capex | `usableArea × ₹600/m²` (MMR DSR rate) |
-| Live rainfall fetch | Open-Meteo archive API: daily precipitation for the traced centroid (2010–2024) |
-| Rainfall forecast | Auto-SARIMA (`pmdarima`, seasonal period 12) forecasts the next 12 months; historical monthly averages remain the fallback |
+| Live rainfall fetch | Open-Meteo archive API: daily precipitation for the traced centroid over the rolling 15 complete calendar years |
+| Rainfall forecast | Auto-SARIMA (`pmdarima`, seasonal period 12) forecasts the next 12 months; response metadata identifies the rainfall-history source |
 | 15-year rainfall averaging | Daily data aggregated to monthly, then averaged across all 15 years |
-| Fallback data | No rainfall result is shown when the API fails |
+| Fallback data | Monthly catchment responses identify the regional climatology fallback; forecast responses identify synthetic regional history |
 | Monsoon dependency score | % of annual yield that falls in Jun–Sep (JJAS monsoon) |
 | Seasonal chart | Bar chart of monthly rainfall (mm) + line chart of monthly demand (kL) |
 
@@ -197,7 +197,7 @@ estimatedCapex (₹) = usableArea × CAPEX_RATE_PER_SQM
 ### Rainfall API Integration
 
 **Endpoint:** `https://archive-api.open-meteo.com/v1/archive`  
-**Parameters:** traced centroid latitude/longitude, `start_date=2010-01-01`, `end_date=2024-12-31`, `daily=precipitation_sum`
+**Parameters:** traced centroid latitude/longitude, rolling 15 complete calendar years, `daily=precipitation_sum`
 
 ```javascript
 // Aggregate to monthly totals per year, then average across years
@@ -269,7 +269,7 @@ function runScenario({ annualTanker, annualMunicipal, capex, gamma }) {
 
     ### Daily Tank Sizer
 
-    `POST /api/roi/tank-sizer` fetches Open-Meteo daily precipitation for 2010–2024
+    `POST /api/roi/tank-sizer` fetches Open-Meteo daily precipitation for the rolling 15 complete calendar years
     and simulates each complete calendar year independently for every candidate tank
     capacity. The request must provide the traced gross roof area, coordinates, roof
     surface type, and eligible daily non-potable demand. The service applies the

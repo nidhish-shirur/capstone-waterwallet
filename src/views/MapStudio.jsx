@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback, useRef, memo } from '
 import { useNavigate } from 'react-router-dom';
 import {
   Cloud, Maximize2, Droplets, Landmark, ChevronRight, Trash2,
-  MousePointerClick, CheckCircle2, AlertTriangle, Undo
+  MousePointerClick, CheckCircle2, AlertTriangle, Undo, MapPin
 } from 'lucide-react';
 import { MapContainer, TileLayer, Polygon, Marker, useMapEvents, useMap } from 'react-leaflet';
 import * as turf from '@turf/turf';
@@ -10,12 +10,13 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  ComposedChart, Line, Legend
+  ComposedChart, Line, Area, Legend
 } from 'recharts';
 import { useWaterWallet } from '../context/WaterWalletContext';
 import { fetchCatchmentData, fetchRainfallForecast, getMLYield } from '../api/waterwallet';
 import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
 import { formatLitres, formatRupees, formatRainfall, formatArea } from '../utils/formatters';
+import { lookupMMRPincode } from '../utils/mmrPincodes';
 
 
 // ─── Fix Leaflet's broken default marker icons in Vite ───────────────────────
@@ -30,6 +31,8 @@ L.Icon.Default.mergeOptions({
 const THANE_CENTER = [19.2183, 72.9781];
 const CAPEX_RATE_PER_SQM = 600;  // ₹ per m² (MMR parametric DSR rate)
 const OBSTACLE_FACTOR = 0.80; // 20% deduction for roof obstacles
+const MMR_DEFAULT_MONTHLY_RAINFALL = [1, 1, 2, 18, 110, 510, 710, 580, 300, 95, 18, 2];
+const MMR_DEFAULT_ANNUAL_RAINFALL = 2447;
 
 // Open-Meteo direct fetch removed, logic moved to backend
 
@@ -65,76 +68,185 @@ function MapResizeHandler() {
   return null;
 }
 
+function MapViewController({ center }) {
+  const map = useMap();
+  useEffect(() => {
+    if (center && center[0] && center[1]) {
+      map.setView(center, 17, { animate: true });
+    }
+  }, [center, map]);
+  return null;
+}
 
+// ─── Monthly Rainfall vs Demand Chart (Historical & Auto-SARIMA Forecast) ─────
+const RainfallDemandChart = memo(function RainfallDemandChart({
+  monthlyMm,
+  monthlyDemand,
+  forecastData,
+  chartMode = 'historical',
+  onToggleMode,
+}) {
+  const isForecast = chartMode === 'forecast' && forecastData;
+  const forecastRain = forecastData?.monthly_rainfall_mm || [];
+  const confInts = forecastData?.confidence_intervals || [];
 
-// ─── Monthly Rainfall vs Demand Chart ───────────────────────────────────────
-const RainfallDemandChart = memo(function RainfallDemandChart({ monthlyMm, monthlyDemand }) {
-  const data = MONTH_LABELS.map((m, i) => ({
-    month: m,
-    rain: Math.round(monthlyMm[i] || 0),
-    demand: monthlyDemand ? Math.round((monthlyDemand[i] || 0) / 1000) : 0 // kL
-  }));
-  // isMonsoon helper defined but unused in charts
+  const data = MONTH_LABELS.map((m, i) => {
+    const demandKl = monthlyDemand ? Math.round((monthlyDemand[i] || 0) / 1000) : 0;
+    if (isForecast) {
+      const rainVal = Math.round(forecastRain[i] || 0);
+      const lower = Math.max(0, Math.round(confInts[i]?.lower_mm || 0));
+      const upper = Math.round(confInts[i]?.upper_mm || 0);
+      return {
+        month: m,
+        rain: rainVal,
+        ciLower: lower,
+        ciUpper: upper,
+        demand: demandKl,
+      };
+    }
+    return {
+      month: m,
+      rain: Math.round(monthlyMm[i] || 0),
+      demand: demandKl,
+    };
+  });
 
   return (
-    <ResponsiveContainer width="100%" height={160}>
-      <ComposedChart data={data} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
-        <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+          <button
+            type="button"
+            onClick={() => onToggleMode?.('historical')}
+            className={`px-2.5 py-1 text-[10px] font-semibold rounded-md transition-all ${
+              chartMode === 'historical'
+                ? 'bg-white text-blue-700 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            15-Yr Historical
+          </button>
+          <button
+            type="button"
+            onClick={() => forecastData && onToggleMode?.('forecast')}
+            disabled={!forecastData}
+            title={forecastData ? 'View 12-month Auto-SARIMA forecast' : 'Trace rooftop to fetch forecast'}
+            className={`px-2.5 py-1 text-[10px] font-semibold rounded-md transition-all ${
+              chartMode === 'forecast'
+                ? 'bg-white text-sky-700 shadow-xs'
+                : forecastData
+                ? 'text-slate-600 hover:text-slate-900'
+                : 'text-slate-300 cursor-not-allowed'
+            }`}
+          >
+            Auto-SARIMA Forecast
+          </button>
+        </div>
 
-        {/* Left Y-axis: Rainfall (mm) */}
-        <YAxis
-          yAxisId="rain"
-          orientation="left"
-          tick={{ fontSize: 9, fill: '#94a3b8' }}
-          axisLine={false}
-          tickLine={false}
-        />
+        {isForecast && forecastData?.model_order && (
+          <span className="text-[10px] font-mono text-sky-800 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-md">
+            SARIMA({forecastData.model_order.order?.join(',')})({forecastData.model_order.seasonal_order?.slice(0, 3)?.join(',')})₁₂ · 95% CI
+          </span>
+        )}
+      </div>
 
-        {/* Right Y-axis: Demand (kL) */}
-        <YAxis
-          yAxisId="demand"
-          orientation="right"
-          tick={{ fontSize: 9, fill: '#d97706' }}
-          axisLine={false}
-          tickLine={false}
-        />
+      <ResponsiveContainer width="100%" height={175}>
+        <ComposedChart data={data} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
+          <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
 
-        <Tooltip
-          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
-          formatter={(value, name) => {
-            if (name === 'rain') return [`${value} mm`, 'Rainfall'];
-            if (name === 'demand') return [`${value} kL`, 'Water Demand'];
-            return [value, name];
-          }}
-        />
+          {/* Left Y-axis: Rainfall (mm) */}
+          <YAxis
+            yAxisId="rain"
+            orientation="left"
+            tick={{ fontSize: 9, fill: '#94a3b8' }}
+            axisLine={false}
+            tickLine={false}
+          />
 
-        <Legend
-          wrapperStyle={{ fontSize: '10px' }}
-          formatter={(value) => {
-            if (value === 'rain') return 'Rainfall (mm)';
-            if (value === 'demand') return 'Demand (kL)';
-            return value;
-          }}
-        />
+          {/* Right Y-axis: Demand (kL) */}
+          <YAxis
+            yAxisId="demand"
+            orientation="right"
+            tick={{ fontSize: 9, fill: '#d97706' }}
+            axisLine={false}
+            tickLine={false}
+          />
 
-        <Bar yAxisId="rain" dataKey="rain" name="rain" radius={[3, 3, 0, 0]}>
-          {data.map((_, idx) => (
-            <Cell key={idx} fill={MONSOON_IDX.includes(idx) ? '#3b82f6' : '#bfdbfe'} />
-          ))}
-        </Bar>
+          <Tooltip
+            contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+            formatter={(value, name) => {
+              if (name === 'rain') return [`${value} mm`, isForecast ? 'Forecast Rain' : 'Historical Rain'];
+              if (name === 'ciUpper') return [`${value} mm`, '95% CI Upper'];
+              if (name === 'ciLower') return [`${value} mm`, '95% CI Lower'];
+              if (name === 'demand') return [`${value} kL`, 'Water Demand'];
+              return [value, name];
+            }}
+          />
 
-        <Line
-          yAxisId="demand"
-          type="monotone"
-          dataKey="demand"
-          name="demand"
-          stroke="#f59e0b"
-          strokeWidth={2}
-          dot={{ r: 3, fill: '#f59e0b', strokeWidth: 0 }}
-          activeDot={{ r: 5 }}
-        />
-      </ComposedChart>
-    </ResponsiveContainer>
+          <Legend
+            wrapperStyle={{ fontSize: '10px' }}
+            formatter={(value) => {
+              if (value === 'rain') return isForecast ? 'Forecast (mm)' : 'Historical Rain (mm)';
+              if (value === 'ciUpper') return '95% CI Band';
+              if (value === 'demand') return 'Demand (kL)';
+              return value;
+            }}
+          />
+
+          {isForecast ? (
+            <>
+              {/* Shaded 95% Confidence Interval band */}
+              <Area
+                yAxisId="rain"
+                type="monotone"
+                dataKey="ciUpper"
+                name="ciUpper"
+                stroke="#38bdf8"
+                strokeDasharray="3 3"
+                fill="#e0f2fe"
+                fillOpacity={0.5}
+              />
+              <Line
+                yAxisId="rain"
+                type="monotone"
+                dataKey="ciLower"
+                stroke="#38bdf8"
+                strokeDasharray="3 3"
+                dot={false}
+                legendType="none"
+              />
+              <Line
+                yAxisId="rain"
+                type="monotone"
+                dataKey="rain"
+                name="rain"
+                stroke="#0284c7"
+                strokeWidth={2.5}
+                dot={{ r: 3, fill: '#0284c7' }}
+                activeDot={{ r: 5 }}
+              />
+            </>
+          ) : (
+            <Bar yAxisId="rain" dataKey="rain" name="rain" radius={[3, 3, 0, 0]}>
+              {data.map((_, idx) => (
+                <Cell key={idx} fill={MONSOON_IDX.includes(idx) ? '#3b82f6' : '#bfdbfe'} />
+              ))}
+            </Bar>
+          )}
+
+          <Line
+            yAxisId="demand"
+            type="monotone"
+            dataKey="demand"
+            name="demand"
+            stroke="#f59e0b"
+            strokeWidth={2}
+            dot={{ r: 3, fill: '#f59e0b', strokeWidth: 0 }}
+            activeDot={{ r: 5 }}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   );
 });
 
@@ -142,11 +254,16 @@ const RainfallDemandChart = memo(function RainfallDemandChart({ monthlyMm, month
 export default function MapStudio() {
   const navigate = useNavigate();
   const {
+    pincode,
     setEstimatedCapex,
     setAnnualYield,
+    setMlAnnualYield,
+    setMlMonthlyYield,
     setMonthlyRainfall,
     setGrossRoofArea,
+    siteLatitude,
     setSiteLatitude,
+    siteLongitude,
     setSiteLongitude,
     setRainfallSource,
     monthlyDemand,
@@ -155,24 +272,79 @@ export default function MapStudio() {
     borewellDepth, setBorewellDepth,
     soilPerm, setSoilPerm,
     coastalKm, setCoastalKm,
+    roofPolygonPoints, setRoofPolygonPoints,
+    setPolygonGeoJSON,
   } = useWaterWallet();
 
-  // ─── Live weather state ──────────────────────────────────────────────────
+  // ─── Pincode MMR Lookup & Map Positioning ──────────────────────────────────
+  const mmrInfo = useMemo(() => lookupMMRPincode(pincode), [pincode]);
+  const [mapCenter, setMapCenter] = useState(
+    siteLatitude && siteLongitude ? [siteLatitude, siteLongitude] : THANE_CENTER
+  );
+  const [pincodeBannerDismissed, setPincodeBannerDismissed] = useState(false);
+
+  useEffect(() => {
+    if (mmrInfo) {
+      const newCenter = [mmrInfo.lat, mmrInfo.lng];
+      setMapCenter(newCenter);
+      setSiteLatitude(mmrInfo.lat);
+      setSiteLongitude(mmrInfo.lng);
+      // Auto-suggest regional parameters if still at initial defaults
+      if (coastalKm === 15 || coastalKm == null) {
+        setCoastalKm(mmrInfo.coastalKm);
+      }
+      if (soilPerm === 3 || soilPerm == null) {
+        setSoilPerm(mmrInfo.soilPerm);
+      }
+    }
+  }, [mmrInfo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Live weather & forecast state ─────────────────────────────────────────
   const [annualRainfall, setAnnualRainfall] = useState(null);
-  const [monthlyMm, setMonthlyMm] = useState(Array(12).fill(0));
+  const [monthlyMm, setMonthlyMm] = useState(MMR_DEFAULT_MONTHLY_RAINFALL);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherError, setWeatherError] = useState(false);
+  const [retryTrigger, setRetryTrigger] = useState(0);
   const [forecastAnnualRainfall, setForecastAnnualRainfall] = useState(null);
+  const [forecastData, setForecastData] = useState(null);
+  const [chartMode, setChartMode] = useState('historical');
   const [historicalPeriod, setHistoricalPeriod] = useState(null);
   const rainfallRequestId = useRef(0);
 
-  const effectiveRainfall = annualRainfall || 0;
+  const effectiveRainfall = annualRainfall || MMR_DEFAULT_ANNUAL_RAINFALL;
 
-  // ─── Polygon state ───────────────────────────────────────────────────────
-  const [points, setPoints] = useState([]);
-  const addPoint = useCallback((latlng) => setPoints((prev) => [...prev, latlng]), []);
-  const clearPoints = () => setPoints([]);
-  const undoPoint = () => setPoints((prev) => prev.slice(0, -1));
+  // ─── Polygon state & Restoration ──────────────────────────────────────────
+  const [points, setPoints] = useState(() => (
+    Array.isArray(roofPolygonPoints) && roofPolygonPoints.length > 0 ? roofPolygonPoints : []
+  ));
+
+  useEffect(() => {
+    if (Array.isArray(roofPolygonPoints) && roofPolygonPoints.length >= 3 && points.length === 0) {
+      setPoints(roofPolygonPoints);
+    }
+  }, [roofPolygonPoints]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addPoint = useCallback((latlng) => {
+    setPoints((prev) => {
+      const next = [...prev, latlng];
+      setRoofPolygonPoints(next);
+      return next;
+    });
+  }, [setRoofPolygonPoints]);
+
+  const clearPoints = () => {
+    setPoints([]);
+    setRoofPolygonPoints([]);
+    setPolygonGeoJSON(null);
+  };
+
+  const undoPoint = () => {
+    setPoints((prev) => {
+      const next = prev.slice(0, -1);
+      setRoofPolygonPoints(next);
+      return next;
+    });
+  };
 
   // ─── Centroid computation via Turf.js ────────────────────────────────────
   const centroid = useMemo(() => {
@@ -185,15 +357,44 @@ export default function MapStudio() {
     } catch { return null; }
   }, [points]);
 
-  // ─── Step 1: Polygon area via Turf.js ────────────────────────────────────
-  const tracedArea = useMemo(() => {
-    if (points.length < 3) return 0;
+  // If a restored polygon centroid exists, ensure map centers on it
+  useEffect(() => {
+    if (centroid && centroid[0] && centroid[1]) {
+      setMapCenter(centroid);
+    }
+  }, [centroid]);
+
+  // ─── Step 1: Polygon area & GeoJSON via Turf.js ───────────────────────────
+  const tracedPolygon = useMemo(() => {
+    if (points.length < 3) return null;
     const turfCoords = points.map(([lat, lng]) => [lng, lat]);
     turfCoords.push(turfCoords[0]);
     try {
-      return turf.area(turf.polygon([turfCoords]));
-    } catch { return 0; }
+      const poly = turf.polygon([turfCoords]);
+      const area = turf.area(poly);
+      if (!Number.isFinite(area) || area <= 0) return null;
+      return {
+        area,
+        geoJSON: {
+          type: 'Feature',
+          geometry: {
+            type: 'Polygon',
+            coordinates: [turfCoords],
+          },
+          properties: {
+            gross_roof_area_sqm: Math.round(area * 10) / 10,
+          },
+        },
+      };
+    } catch {
+      return null;
+    }
   }, [points]);
+  const tracedArea = tracedPolygon?.area ?? 0;
+
+  useEffect(() => {
+    setPolygonGeoJSON(tracedPolygon?.geoJSON ?? null);
+  }, [tracedPolygon, setPolygonGeoJSON]);
 
   // ─── Step 2: Derived metrics ──────────────────────────────────────────────
   const { maxYield, estimatedCapex } = useMemo(() => {
@@ -210,32 +411,43 @@ export default function MapStudio() {
   const [mlYieldDeviation, setMlYieldDeviation] = useState(null);
 
   // ─── Fetch rainfall data dynamically from backend based on centroid coordinates
+  // ─── Fetch rainfall data dynamically from backend based on centroid coordinates
   useEffect(() => {
     const requestId = ++rainfallRequestId.current;
 
     if (!centroid || tracedArea <= 0) {
       // Resetting request state when the selected catchment is cleared is
       // intentional; these values are derived from an external API request.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBackendYield(0);
       setMlYieldSource(null);
       setMlYieldDeviation(null);
       setForecastAnnualRainfall(null);
+      setForecastData(null);
+      setMlAnnualYield(0);
+      setMlMonthlyYield(null);
       setHistoricalPeriod(null);
       setAnnualRainfall(null);
-      setMonthlyMm(Array(12).fill(0));
+      setMonthlyMm(MMR_DEFAULT_MONTHLY_RAINFALL);
       setGrossRoofArea(0);
       setRainfallSource('seed');
       setWeatherLoading(false);
+      setWeatherError(false);
       return;
     }
 
     setWeatherLoading(true);
     setWeatherError(false);
     setAnnualRainfall(null);
-    setMonthlyMm(Array(12).fill(0));
+    setMonthlyMm(MMR_DEFAULT_MONTHLY_RAINFALL);
+    setMonthlyRainfall(MMR_DEFAULT_MONTHLY_RAINFALL);
+    setRainfallSource('seed');
+    setBackendYield(0);
     setForecastAnnualRainfall(null);
-    setHistoricalPeriod(null);
+    setForecastData(null);
+    setMlYieldSource(null);
+    setMlYieldDeviation(null);
+    setMlAnnualYield(0);
+    setMlMonthlyYield(null);
     const catchmentPayload = {
       latitude: centroid[0],
       longitude: centroid[1],
@@ -254,11 +466,12 @@ export default function MapStudio() {
         setMonthlyMm(historicalData.monthly_rainfall_mm);
         setMonthlyRainfall(historicalData.monthly_rainfall_mm);
         setGrossRoofArea(tracedArea);
-        setRainfallSource('phase2_historical');
+        setRainfallSource(historicalData.fallback_used ? 'regional_fallback' : 'phase2_historical');
         setBackendYield(historicalData.annual_yield_litres);
-        setHistoricalPeriod(
-          `${historicalData.historical_start_year}–${historicalData.historical_end_year}`,
-        );
+        setWeatherError(Boolean(historicalData.fallback_used));
+        setHistoricalPeriod(historicalData.fallback_used
+          ? 'Regional climatological baseline · fallback'
+          : `${historicalData.historical_start_year}–${historicalData.historical_end_year}`);
 
         // Historical rainfall is authoritative. ML yield and forecasting are
         // optional enrichments and must not turn a successful rainfall load
@@ -293,25 +506,42 @@ export default function MapStudio() {
 
         if (result.forecastData) {
           setForecastAnnualRainfall(result.forecastData.annual_rainfall_mm);
+          setForecastData(result.forecastData);
         } else {
           console.warn('Auto-SARIMA forecast unavailable; retaining historical rainfall baseline.');
         }
         if (result.mlData) {
           setMlYieldSource(result.mlData.source);
           setMlYieldDeviation(result.mlData.ml_deviation_percent);
+          // Sync ML yield values to global context (converting kL to Litres)
+          setMlAnnualYield(result.mlData.annual_yield_kl * 1000);
+          if (result.mlData.monthly_yield_kl) {
+            setMlMonthlyYield(result.mlData.monthly_yield_kl.map((v) => v * 1000));
+          }
         }
         setWeatherLoading(false);
       })
       .catch((err) => {
         if (requestId !== rainfallRequestId.current) return;
 
-        console.error("Backend calculation error:", err);
+        console.warn("Backend calculation error, applying MMR regional baseline fallback:", err);
+        const usable = tracedArea * OBSTACLE_FACTOR;
+        const runoffCoeff = ROOF_RUNOFF_COEFFICIENTS[roofSurfaceType] || 0.90;
+        const fallbackYield = usable * MMR_DEFAULT_ANNUAL_RAINFALL * runoffCoeff;
+
+        setAnnualRainfall(MMR_DEFAULT_ANNUAL_RAINFALL);
+        setMonthlyMm(MMR_DEFAULT_MONTHLY_RAINFALL);
+        setMonthlyRainfall(MMR_DEFAULT_MONTHLY_RAINFALL);
+        setGrossRoofArea(tracedArea);
+        setRainfallSource('seed');
+        setBackendYield(fallbackYield);
+        setHistoricalPeriod('MMR Regional Climatological Baseline');
         setWeatherError(true);
         setWeatherLoading(false);
       });
     setSiteLatitude(centroid[0]);
     setSiteLongitude(centroid[1]);
-  }, [centroid, tracedArea, roofSurfaceType, setGrossRoofArea, setMonthlyRainfall, setRainfallSource, setSiteLatitude, setSiteLongitude]);
+  }, [centroid, tracedArea, roofSurfaceType, retryTrigger, setGrossRoofArea, setMonthlyRainfall, setRainfallSource, setSiteLatitude, setSiteLongitude, setMlAnnualYield, setMlMonthlyYield]);
 
   // ─── Monsoon dependency score ─────────────────────────────────────────────
   const monsoonPct = useMemo(() => {
@@ -323,33 +553,40 @@ export default function MapStudio() {
 
   // ─── Step 3: Sync to global context ──────────────────────────────────────
   useEffect(() => {
-    if (estimatedCapex > 0) {
-      setEstimatedCapex(estimatedCapex);
-    }
-    if (tracedArea > 0) {
-      setGrossRoofArea(tracedArea);
-    }
-    if (backendYield > 0 || maxYield > 0) {
-      setAnnualYield(backendYield || maxYield);
-    }
+    setEstimatedCapex(estimatedCapex);
+    setGrossRoofArea(tracedArea);
+    setAnnualYield(tracedArea > 0 ? backendYield || maxYield : 0);
     if (monthlyMm && monthlyMm.some(v => v > 0)) {
       setMonthlyRainfall(monthlyMm);
     }
-  }, [estimatedCapex, backendYield, maxYield, monthlyMm, tracedArea]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [estimatedCapex, backendYield, maxYield, monthlyMm, tracedArea, setEstimatedCapex, setGrossRoofArea, setAnnualYield, setMonthlyRainfall]);
 
   // ─── KPI sidebar cards ─────────────────────────────────────────────────────
+  const canTrace = points.length >= 3;
+  const hasMonsoonData = monthlyMm.some((v) => v > 0);
+
   const liveMetrics = [
     {
       icon: Cloud,
       label: 'Rainfall Planning Baseline',
       value: weatherLoading ? 'Fetching…' : formatRainfall(effectiveRainfall),
       unit: weatherError
-        ? 'Rainfall unavailable'
+        ? 'Regional fallback applied · not site-specific'
         : annualRainfall == null
-        ? 'Trace a valid roof polygon to fetch rainfall'
+        ? 'Regional IMD Normal · Trace roof to calculate site yield'
         : forecastAnnualRainfall == null
         ? `${historicalPeriod || '15-year historical normal'} · Open-Meteo`
-        : `${historicalPeriod || '15-year historical normal'} · next 12-month forecast ${formatRainfall(forecastAnnualRainfall)}`,
+        : `${historicalPeriod || '15-year historical normal'} · ${forecastData?.fallback_used ? 'forecast uses synthetic regional history' : 'next 12-month forecast'} ${formatRainfall(forecastAnnualRainfall)}`,
+      action: canTrace ? (
+        <button
+          type="button"
+          onClick={() => setRetryTrigger((prev) => prev + 1)}
+          className="text-[10px] text-blue-600 hover:text-blue-800 font-semibold underline cursor-pointer bg-transparent border-0 p-0 ml-1.5"
+          title="Retry fetching site-specific rainfall"
+        >
+          {weatherLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      ) : null,
       color: 'text-blue-600', bg: 'bg-blue-50', highlight: false,
     },
     {
@@ -371,9 +608,6 @@ export default function MapStudio() {
       color: 'text-blue-700', bg: 'bg-blue-50', highlight: true,
     },
   ];
-
-  const canTrace = points.length >= 3;
-  const hasMonsoonData = monthlyMm.some((v) => v > 0);
 
   return (
     <div className="page-content p-4 sm:p-6 lg:p-8">
@@ -433,17 +667,38 @@ export default function MapStudio() {
               </div>
             </div>
 
+            {/* MMR Pincode Auto-Location Alert Strip */}
+            {mmrInfo && !pincodeBannerDismissed && (
+              <div className="mb-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between text-xs text-blue-900 shadow-xs">
+                <div className="flex items-center gap-2">
+                  <MapPin size={14} className="text-blue-600 flex-shrink-0" />
+                  <span>
+                    <strong>Pincode {mmrInfo.pincode} Located:</strong> {mmrInfo.suburb}, {mmrInfo.region} · Est. Coast: {mmrInfo.coastalKm} km · Suggested Soil: {mmrInfo.soilLabel}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPincodeBannerDismissed(true)}
+                  className="text-blue-500 hover:text-blue-700 font-bold px-1 text-xs"
+                  aria-label="Dismiss banner"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* Leaflet Map */}
             <div className="flex-1 rounded-xl overflow-hidden min-h-[360px] sm:min-h-[460px] relative">
               <div className="absolute inset-0">
                 <MapContainer
-                  center={THANE_CENTER}
+                  center={mapCenter}
                   zoom={18}
                   style={{ height: '100%', width: '100%', zIndex: 0 }}
                   scrollWheelZoom
                   className="crosshair-map"
                 >
                   <MapResizeHandler />
+                  <MapViewController center={mapCenter} />
                   <TileLayer 
                     url={ESRI_TILE_URL} 
                     attribution={ESRI_ATTRIBUTION} 
@@ -509,7 +764,10 @@ export default function MapStudio() {
                       <p className={`text-xl font-bold mt-1 ${m.color} ${!canTrace && m.label !== 'Live Rainfall Data' ? 'opacity-30' : ''}`}>
                         {m.value}
                       </p>
-                      <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">{m.unit}</p>
+                      <div className="flex items-center flex-wrap gap-1 mt-0.5">
+                        <p className="text-[10px] text-slate-400 leading-tight">{m.unit}</p>
+                        {m.action}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -520,11 +778,21 @@ export default function MapStudio() {
           {/* ── Feature 4: Monthly Rainfall vs Demand Chart ── */}
           {hasMonsoonData && (
             <div className="ww-card p-4">
-              <p className="text-xs font-semibold text-slate-700 mb-1">Seasonal Rainfall vs Demand</p>
-              <p className="text-xs text-slate-400 mb-3">
-                15-yr avg · <span className="text-blue-600 font-medium">Blue = monsoon months</span>
-              </p>
-              <RainfallDemandChart monthlyMm={monthlyMm} monthlyDemand={monthlyDemand} />
+              <div className="mb-2">
+                <p className="text-xs font-semibold text-slate-700">Seasonal Rainfall vs Demand</p>
+                <p className="text-xs text-slate-400">
+                  {chartMode === 'forecast'
+                    ? '12-Month Auto-SARIMA dynamic forecast with 95% confidence bands'
+                    : '15-yr climatological avg · Blue = monsoon months (Jun–Sep)'}
+                </p>
+              </div>
+              <RainfallDemandChart
+                monthlyMm={monthlyMm}
+                monthlyDemand={monthlyDemand}
+                forecastData={forecastData}
+                chartMode={chartMode}
+                onToggleMode={setChartMode}
+              />
             </div>
           )}
 

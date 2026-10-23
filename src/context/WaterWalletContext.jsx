@@ -5,12 +5,18 @@ import { SEASONAL_WEIGHTS, calculateCanonicalDemand } from '../utils/waterConsta
 // ─── Default seed values mirror the old hardcoded dummy data ─────────────────
 //   so the ROI Dashboard is never blank on first load.
 const defaultBillingRows = [
-  { id: 1, month: 'April',    year: '2025', bill: '18500', tankers: 14, costPerTanker: '1500', tankerCapacity: 10000 },
-  { id: 2, month: 'May',      year: '2025', bill: '21200', tankers: 18, costPerTanker: '1500', tankerCapacity: 10000 },
-  { id: 3, month: 'June',     year: '2025', bill: '19800', tankers: 11, costPerTanker: '1600', tankerCapacity: 10000 },
-  { id: 4, month: 'March',    year: '2025', bill: '15300', tankers: 7,  costPerTanker: '1400', tankerCapacity: 10000 },
-  { id: 5, month: 'February', year: '2025', bill: '12800', tankers: 4,  costPerTanker: '1400', tankerCapacity: 10000 },
-  { id: 6, month: 'January',  year: '2025', bill: '13500', tankers: 3,  costPerTanker: '1400', tankerCapacity: 10000 },
+  { id: 1,  month: 'January',   year: '2025', bill: '14200', tankers: 16, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 2,  month: 'February',  year: '2025', bill: '14500', tankers: 18, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 3,  month: 'March',     year: '2025', bill: '15800', tankers: 22, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 4,  month: 'April',     year: '2025', bill: '17200', tankers: 24, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 5,  month: 'May',       year: '2025', bill: '18500', tankers: 25, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 6,  month: 'June',      year: '2025', bill: '16900', tankers: 21, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 7,  month: 'July',      year: '2025', bill: '14000', tankers: 15, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 8,  month: 'August',    year: '2025', bill: '13800', tankers: 15, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 9,  month: 'September', year: '2025', bill: '14100', tankers: 16, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 10, month: 'October',   year: '2025', bill: '15200', tankers: 19, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 11, month: 'November',  year: '2025', bill: '14800', tankers: 20, costPerTanker: '1500', tankerCapacity: 10000 },
+  { id: 12, month: 'December',  year: '2025', bill: '14400', tankers: 17, costPerTanker: '1500', tankerCapacity: 10000 },
 ];
 
 const calcBillingTotals = (rows) => {
@@ -60,8 +66,15 @@ export function WaterWalletProvider({ children }) {
     numFlats: 50,
     occupantsPerFlat: 4,
     includeLosses: true,
-  }).adjustedDemand * 365;
-  const [annualDemand, setAnnualDemand] = useState(defaultDemandSeed);
+  });
+  const [annualDemand, setAnnualDemand] = useState(defaultDemandSeed.adjustedDemand * 365);
+  const [potableDemand, setPotableDemand] = useState(defaultDemandSeed.potableDemand * 365);
+  const [nonPotableDemand, setNonPotableDemand] = useState(defaultDemandSeed.nonPotableDemand * 365);
+
+  // ML Yield Regressor outputs
+  const [mlAnnualYield, setMlAnnualYield] = useState(null);
+  const [mlMonthlyYield, setMlMonthlyYield] = useState(null);
+
   const defaultRainfallNormals = [1, 1, 2, 18, 110, 510, 710, 580, 300, 95, 18, 2];
   const [monthlyRainfall, setMonthlyRainfall] = useState(defaultRainfallNormals);
   const [grossRoofArea, setGrossRoofArea] = useState(1200);
@@ -69,12 +82,17 @@ export function WaterWalletProvider({ children }) {
   const [siteLatitude, setSiteLatitude] = useState(19.076);
   const [siteLongitude, setSiteLongitude] = useState(72.877);
   const [rainfallSource, setRainfallSource] = useState('seed');
+  const [roofPolygonPoints, setRoofPolygonPoints] = useState([]);
+  const [polygonGeoJSON, setPolygonGeoJSON] = useState(null);
+
+  // ── Phase 3: ROI Parameters ──
+  const [tankCapacityLitres, setTankCapacityLitres] = useState(10000);
 
   // ── ML Site Parameters ──
   const [borewell,        setBorewellState]   = useState(1);
   const [borewellDepth,   setBorewellDepth]   = useState(95.0);
   const [soilPerm,        setSoilPerm]        = useState(3);
-  const [coastalKm,       setCoastalKm]       = useState(25.0);
+  const [coastalKm,       setCoastalKm]       = useState(15.0);
 
   const setBorewell = (val) => {
     const num = Number(val);
@@ -102,11 +120,15 @@ export function WaterWalletProvider({ children }) {
     totalMunicipal,   setTotalMunicipal,
     totalTankerVolume, setTotalTankerVolume,
     billingMonths,    setBillingMonths,
+    potableDemand,    setPotableDemand,
+    nonPotableDemand, setNonPotableDemand,
 
     // Phase 2
     estimatedCapex,   setEstimatedCapex,
     annualYield,      setAnnualYield,
     annualDemand,     setAnnualDemand,
+    mlAnnualYield,    setMlAnnualYield,
+    mlMonthlyYield,   setMlMonthlyYield,
     monthlyDemand,
     monthlyRainfall,  setMonthlyRainfall,
     grossRoofArea,    setGrossRoofArea,
@@ -114,6 +136,11 @@ export function WaterWalletProvider({ children }) {
     siteLatitude,     setSiteLatitude,
     siteLongitude,    setSiteLongitude,
     rainfallSource,   setRainfallSource,
+    roofPolygonPoints, setRoofPolygonPoints,
+    polygonGeoJSON,   setPolygonGeoJSON,
+
+    // Phase 3
+    tankCapacityLitres, setTankCapacityLitres,
 
     // ML Site Parameters
     borewell,         setBorewell,

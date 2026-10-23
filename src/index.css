@@ -296,3 +296,82 @@ input:checked + .toggle-slider:before {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ─── Print Stylesheet & PDF Pagination ──────────────────────────────────── */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 10mm 14mm 10mm;
+  }
+
+  *,
+  *::before,
+  *::after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 9.5pt !important;
+    line-height: 1.35 !important;
+  }
+
+  /* Hide interactive chrome: navigation, sidebars, action buttons, tooltips */
+  header,
+  nav,
+  aside,
+  .app-sidebar,
+  .app-topbar,
+  #download-pdf-btn,
+  #export-csv-btn,
+  #export-json-btn,
+  .no-print,
+  button:not(.print-keep),
+  input[type="range"],
+  .toggle-slider,
+  .recharts-legend-wrapper,
+  .recharts-tooltip-wrapper {
+    display: none !important;
+  }
+
+  /* Full-width container without scroll clipping */
+  .app-shell,
+  .app-shell main,
+  .page-content {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+  }
+
+  /* Avoid awkward page cuts in analytical cards and charts */
+  .ww-card,
+  section,
+  .grid,
+  figure,
+  table,
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    box-shadow: none !important;
+    border: 1px solid #cbd5e1 !important;
+  }
+
+  /* Heading rules for clean pagination */
+  h1, h2, h3, h4 {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    color: #0f172a !important;
+  }
+
+  /* Make sure flex layouts don't collapse */
+  .flex {
+    flex-wrap: wrap !important;
+  }
+}
+

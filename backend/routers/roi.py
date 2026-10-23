@@ -38,6 +38,9 @@ def roi_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResponse:
 
     Output: "72% chance of break-even by Year 3, 91% by Year 4."
     """
+    runoff_coeff = ROOF_RUNOFF_COEFFICIENTS.get(
+        (payload.roof_surface_type or "concrete").lower(), 0.90
+    )
     result = run_monte_carlo(
         rooftop_area_m2   = payload.rooftop_area_m2,
         monthly_demand_kl = payload.monthly_demand_kl,
@@ -50,6 +53,7 @@ def roi_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResponse:
         inflation_rate    = payload.inflation_rate,
         n_scenarios       = payload.n_scenarios,
         monthly_rainfall_mm = payload.monthly_rainfall_mm,
+        runoff_coeff      = runoff_coeff,
     )
     return MonteCarloResponse(**result)
 
@@ -71,5 +75,6 @@ async def roi_tank_sizer(payload: TankSizerRequest) -> TankSizerResponse:
         fixed_system_cost=payload.fixed_system_cost,
         reliability_target_percent=payload.reliability_target_percent,
         recharge_enabled=payload.recharge_enabled,
+        recharge_capacity_litres_per_day=payload.recharge_capacity_litres_per_day,
     )
     return TankSizerResponse(**result)

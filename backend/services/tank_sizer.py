@@ -8,6 +8,28 @@ Overflow is deliberately not financial savings:
 
 from dataclasses import dataclass
 
+# Standard candidate capacities realistic for MMR residential installations (5k–70k L)
+CANDIDATE_CAPACITIES_L = [5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 70000]
+
+# ── Diminishing-returns threshold ─────────────────────────────────────────────
+# Project-specific heuristic, NOT a physical constant.
+# A tank litre can cycle many times during a monsoon (fill-draw-fill), so annual
+# useful water per litre of capacity routinely exceeds 1.0.  We stop expanding
+# when each extra litre of tank capacity yields less than MARGINAL_RETURN_FLOOR
+# litres of additional useful water per year, because below this point civil
+# construction cost dominates the benefit.  The value 1.5 was chosen for MMR
+# residential economics where tank civil cost ≈ ₹4/L and tanker water ≈ ₹0.8/L,
+# giving a payback-neutral ratio of about 5.0; 1.5 is a conservative floor that
+# stops well before the knee becomes flat.
+MARGINAL_RETURN_FLOOR = 1.5
+
+# ── Default recharge pit capacity ─────────────────────────────────────────────
+# A standard MMR recharge pit (1.2 m dia × 3 m deep, gravel-packed) can
+# infiltrate roughly 8,000–12,000 L/day depending on soil permeability.
+# 10,000 L/day is used as the default finite capacity.  Any tank overflow
+# exceeding this daily rate spills to stormwater drain as lost_overflow.
+DEFAULT_RECHARGE_CAPACITY_LITRES_PER_DAY = 10_000
+
 
 @dataclass(frozen=True)
 class TankYearResult:
@@ -30,6 +52,7 @@ def simulate_tank_year(
     first_flush_fraction: float,
     year: int,
     recharge_enabled: bool,
+    recharge_capacity_litres_per_day: float = DEFAULT_RECHARGE_CAPACITY_LITRES_PER_DAY,
 ) -> TankYearResult:
     # daily_demand_litres is eligible non-potable demand only (for example,
     # flushing and gardening), never total society/IS 1172 demand.
@@ -42,7 +65,12 @@ def simulate_tank_year(
         inflow *= 1.0 - first_flush_fraction
         total_inflow += inflow
         if tank_capacity_litres <= 0:
-            lost_overflow += inflow
+            if recharge_enabled:
+                recharged = min(inflow, recharge_capacity_litres_per_day)
+                recharge_overflow += recharged
+                lost_overflow += inflow - recharged
+            else:
+                lost_overflow += inflow
             unmet += daily_demand_litres
             continue
         available = tank_level + inflow
@@ -54,7 +82,11 @@ def simulate_tank_year(
         useful += served
         unmet += daily_demand_litres - served
         if recharge_enabled:
-            recharge_overflow += overflow
+            # Recharge pit has finite daily infiltration capacity.
+            # Overflow beyond this rate spills to stormwater drain.
+            recharged = min(overflow, recharge_capacity_litres_per_day)
+            recharge_overflow += recharged
+            lost_overflow += overflow - recharged
         else:
             lost_overflow += overflow
 
@@ -84,13 +116,29 @@ def size_tanks(
     fixed_system_cost: float,
     reliability_target_percent: float,
     recharge_enabled: bool,
+    recharge_capacity_litres_per_day: float = DEFAULT_RECHARGE_CAPACITY_LITRES_PER_DAY,
 ) -> dict:
+    """Size RWH tanks against daily historical rainfall.
+
+    Financial parameters are caller-supplied, not hard-coded:
+      * ``tank_cost_per_litre`` — storage vessel material/civil cost per litre
+        of capacity (default 4.0 INR/L in the API schema).
+      * ``fixed_system_cost`` — shared first-flush, filter, piping, and
+        installation cost (default 7,200 INR in the API schema).
+      * ``tanker_rate_per_litre`` — effective tanker water cost for savings
+        calculation (default 0.80 INR/L in the API schema).
+
+    Capex for a candidate = fixed_system_cost + (capacity × tank_cost_per_litre).
+    These defaults are illustrative for MMR housing-society scale; callers
+    should override them with site-specific quotations when available.
+    """
     candidates = []
     for capacity in candidate_capacities_litres:
         yearly = [
             simulate_tank_year(
                 rainfall, capacity, daily_demand_litres, usable_roof_area_sqm,
                 runoff_coefficient, first_flush_fraction, year, recharge_enabled,
+                recharge_capacity_litres_per_day,
             )
             for year, rainfall in sorted(rainfall_by_year.items())
         ]
@@ -126,22 +174,53 @@ def size_tanks(
         )
         reliability_target_met = True
     else:
-        # Do not select the zero-capacity baseline just because no candidate
-        # reaches the target; that makes a working system appear to produce
-        # zero water. Prefer the highest-reliability non-zero option and
-        # report that the target was not reached.
-        non_zero = [row for row in candidates if row["capacity_litres"] > 0]
-        selected = max(
-            non_zero or candidates,
-            key=lambda row: (row["reliability_percent"], row["useful_water_litres"], -row["capacity_litres"]),
-        )
-        selection_status = "best_available_below_reliability_target"
-        selection_reason = (
-            f"No tested tank reaches the {reliability_target_percent:g}% "
-            "average reliability target; selected the highest-reliability "
-            "non-zero capacity."
-        )
-        reliability_target_met = False
+        # In MMR, rainfall is concentrated in 3-4 monsoon months; 80% is physically unachievable.
+        # If no candidate hits the requested target, check against realistic MMR threshold (40%).
+        fallback_target = 40.0
+        qualifying_fallback = [row for row in candidates if row["reliability_percent"] >= fallback_target] if reliability_target_percent > fallback_target else []
+
+        if qualifying_fallback:
+            selected = min(qualifying_fallback, key=lambda row: row["capacity_litres"])
+            selection_status = "meets_realistic_mmr_target"
+            selection_reason = (
+                f"Requested {reliability_target_percent:g}% target is unachievable under MMR seasonal monsoon rainfall. "
+                f"Selected smallest tank meeting the realistic MMR seasonal target of {fallback_target:g}%."
+            )
+            reliability_target_met = False
+        else:
+            # When the target cannot be met (due to dry months outside monsoon),
+            # do NOT blindly select the largest tank via max(). That leads to oversized
+            # 70k-150k L tanks with steep diminishing returns.
+            # Instead, select the economic knee point: the capacity where marginal
+            # useful-water gain per additional litre of tank storage drops below the
+            # project-specific diminishing-returns threshold (MARGINAL_RETURN_FLOOR).
+            # This threshold is a heuristic, not a physical constant — see the
+            # module-level comment on MARGINAL_RETURN_FLOOR for rationale.
+            non_zero = sorted(
+                [row for row in candidates if row["capacity_litres"] > 0],
+                key=lambda row: row["capacity_litres"],
+            )
+            if non_zero:
+                selected = non_zero[0]
+                for i in range(1, len(non_zero)):
+                    prev = non_zero[i - 1]
+                    curr = non_zero[i]
+                    d_water = curr["useful_water_litres"] - prev["useful_water_litres"]
+                    d_cap = curr["capacity_litres"] - prev["capacity_litres"]
+                    if d_cap > 0 and (d_water / d_cap) >= MARGINAL_RETURN_FLOOR:
+                        selected = curr
+                    else:
+                        break
+            else:
+                selected = candidates[0]
+
+            selection_status = "optimal_diminishing_returns_knee"
+            selection_reason = (
+                f"Full-year reliability target of {reliability_target_percent:g}% is constrained by Mumbai's 8 dry months. "
+                f"Selected {int(selected['capacity_litres']):,} L as the optimal economic capacity "
+                f"(marginal return threshold: {MARGINAL_RETURN_FLOOR} L useful water per additional L of tank capacity per year)."
+            )
+            reliability_target_met = False
     return {
         "selected_candidate": selected,
         "reliability_target_met": reliability_target_met,
