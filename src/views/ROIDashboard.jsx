@@ -8,6 +8,7 @@ import { simulateROI, runMonteCarlo, getMLRecommendation, getWaterAdvisory, save
 import { useWaterWallet } from '../context/WaterWalletContext';
 import { ROOF_RUNOFF_COEFFICIENTS } from '../utils/waterConstants';
 import { escapeCsvCell } from '../utils/csv';
+import CumulativeSavingsD3Chart from '../components/CumulativeSavingsD3Chart';
 
 // ─── Tank Visualizer Component (Faithful 3D Cylinder & Monthly Water Balance) ──
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1339,7 +1340,7 @@ export default function ROIDashboard() {
         annual_yield_litres: Number(effectiveAnnualYield),
         estimated_capex_inr: Number(adjustedCapex),
         current_annual_water_cost_inr: Number((annualTanker + annualMunicipal) * 100000),
-        payback_years: String(breakEvens.current || `> ${ROI_HORIZON_YEARS} Yrs`),
+        payback_years: String(currentPayback),
         self_sufficiency_percent: Math.min(
           100,
           Math.max(0, Math.round((Number(effectiveAnnualYield) / Number(nonPotableDemandLitres)) * 100)),
@@ -1355,7 +1356,7 @@ export default function ROIDashboard() {
       if (detail) {
         setAdvisoryError(detail);
       } else if (error.request) {
-        setAdvisoryError('The advisory service could not be reached. Make sure the FastAPI backend is running on port 8000.');
+        setAdvisoryError('The advisory service could not be reached. Please try again.');
       } else {
         setAdvisoryError(error.message || 'Unable to generate the advisory right now.');
       }
@@ -1364,7 +1365,7 @@ export default function ROIDashboard() {
     }
   }, [
     societyName, flats, occupants, nonPotableDemandLitres, effectiveAnnualYield, adjustedCapex,
-    annualTanker, annualMunicipal, breakEvens, mlRecommendResult,
+    annualTanker, annualMunicipal, currentPayback, mlRecommendResult,
     monteCarloResult, advisoryFocus,
   ]);
 
@@ -2220,6 +2221,19 @@ export default function ROIDashboard() {
           year for each inflation scenario.
         </p>
       </div>
+
+      {/* D3 Multi-Horizon Cumulative Water Savings Projections */}
+      <CumulativeSavingsD3Chart
+        capex={adjustedCapex}
+        effectiveAnnualYield={effectiveAnnualYield}
+        nonPotableDemandLitres={nonPotableDemandLitres}
+        annualTanker={annualTanker}
+        annualTankerVolumeLitres={annualTankerVolumeLitres}
+        annualMunicipal={annualMunicipal}
+        municipalTariffPerKl={municipalTariffPerKl}
+        inflationRate={0.08}
+        deterministicPayback={currentPayback}
+      />
     </div>
   );
 }

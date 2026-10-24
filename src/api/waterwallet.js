@@ -3,8 +3,11 @@ import axios from "axios";
 // ---------------------------------------------------------------------------
 // Base client — all requests go to the FastAPI backend
 // ---------------------------------------------------------------------------
+const rawApiUrl = import.meta.env.VITE_API_URL || "";
+const apiUrl = rawApiUrl.includes("localhost:8000") ? "" : rawApiUrl;
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL ?? "http://localhost:8000",
+  baseURL: apiUrl,
   headers: { "Content-Type": "application/json" },
   timeout: 30_000,
 });

@@ -1,0 +1,8 @@
+{
+  "name": "WaterWallet",
+  "description": "Intelligent rainwater harvesting demand, catchment yield, and ROI simulation platform for housing societies.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
