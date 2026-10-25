@@ -1,0 +1,562 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{array}
+
+\begin{document}
+
+\title{WaterWallet: A Physics-Informed Decision-Support Platform for\\
+Residential Rainwater Harvesting in the Mumbai Metropolitan Region}
+
+\author{
+  \IEEEauthorblockN{Nidhish Shirur, Neha Bhatia, Diksha Bagwe}
+  \IEEEauthorblockA{
+    \textit{Department of Computer Engineering}\\
+    \textit{Vivekanand Education Society's Institute of Technology (VESIT)}\\
+    University of Mumbai, Mumbai, India\\
+    Guide: Dr.~Mrs.~Gresha Bhatia
+  }
+}
+
+\maketitle
+
+\begin{abstract}
+Residential housing societies need to assess whether rooftop rainwater harvesting (RWH) can contribute to non-potable water demand and whether a proposed system is financially plausible. This paper presents WaterWallet, a full-stack decision-support prototype that combines society demand and billing inputs, map-derived rooftop catchments, historical rainfall retrieval, seasonal rainfall forecasting, physics-based yield calculations, hydrogeological screening, and financial analysis. Its React and Vite client communicates with a FastAPI service layer. The backend includes a deterministic RWH safety gate, bundled Random Forest models for configuration recommendation and monthly yield estimation, a daily tank water-balance sizing service, deterministic and Monte Carlo return-on-investment (ROI) analyses, and an optional natural-language advisory. The system is designed for pre-consultation feasibility analysis rather than final engineering design. Its classifier is trained on rule-generated synthetic labels, the yield regressor learns targets generated from the physical yield equation, and the rainfall forecast has not been independently validated here against a current holdout evaluation. Accordingly, no model-accuracy, field-savings, or generalization claim is made. Existing software tests exercise selected water-balance and scenario-flow behaviors; they do not establish hydrological validity or field performance. The paper describes the implemented methods and their evidence limits to provide a reproducible, technically bounded account of the current prototype.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Rainwater harvesting, decision-support system, urban hydrology,
+seasonal forecasting, water balance, Monte Carlo simulation,
+explainable machine learning, Mumbai Metropolitan Region.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+Rainwater harvesting can supplement municipal and tanker water for
+non-potable uses in residential buildings. However, a society committee
+considering an installation must reason about more than annual rainfall:
+roof area and material affect runoff, demand varies over time, storage
+limits determine how much monsoon inflow can be retained, and site
+conditions constrain groundwater recharge. Financial estimates are also
+sensitive to system cost, water tariffs, tanker volume, and maintenance.
+
+WaterWallet addresses this decision problem as a feasibility-screening
+workflow. It combines a society demand profile and billing history with a
+rooftop polygon, rainfall information, site attributes, and configurable
+financial assumptions. The interface presents a catchment estimate,
+configuration recommendation, tank-sizing analysis, and ROI projections.
+It does not certify that a site is safe for recharge, guarantee a forecast,
+or replace a licensed engineer's site investigation and final design.
+
+The current implementation makes three practical contributions:
+\begin{enumerate}
+  \item It connects an interactive frontend to a backend API that performs
+    demand, rainfall, yield, recommendation, tank-sizing, and ROI
+    calculations in one user workflow.
+  \item It separates deterministic physical and safety rules from
+    data-driven recommendations, and distinguishes annualized financial
+    estimates from storage-constrained water-balance simulations.
+  \item It documents the evidentiary limits of its predictive components:
+    the configuration labels are synthetic and rule-derived, the yield
+    model's training targets come from a physical equation, and the
+    available software tests are not field validation.
+\end{enumerate}
+
+\section{Related Methods and Design Context}
+\label{sec:related}
+
+WaterWallet uses the 135 litres per capita per day residential baseline
+configured from IS~1172 \cite{bis1172}. This value is an input convention
+for the prototype, not a measurement of any particular society's
+consumption. The frontend and backend also permit an optional
+unaccounted-for-water (UFW) allowance and a peak-demand buffer; these
+adjustments are application settings and should not be interpreted as a
+site-specific demand study.
+
+For rainfall, the application queries the Open-Meteo Archive API
+\cite{openmeteo}. Its forecasting endpoint applies seasonal Auto-ARIMA
+model selection to a chronological monthly series. Seasonal time-series
+methods are established forecasting tools \cite{hyndman}; their inclusion
+does not by itself establish forecast skill for a particular location or
+horizon. The service returns a forecast interval, but a current
+independent evaluation is outside the evidence reported in this paper.
+
+The recommendation service can return per-feature SHAP attributions
+\cite{lundberg}. Such attributions explain the model output with respect
+to the fitted model; they are neither causal effects nor evidence that a
+recommendation is hydrologically correct. WaterWallet therefore places a
+deterministic safety gate before the learned classifier and treats both
+the gate and the model as screening aids that require expert review.
+
+\section{System Architecture}
+\label{sec:architecture}
+
+\begin{figure*}[t]
+\centering
+\fbox{\begin{minipage}{0.94\textwidth}
+\centering
+\textbf{React 19 + Vite client}\\
+Virtual Meter: society demand and billing \qquad
+Map Studio: rooftop polygon and location \qquad
+ROI Dashboard: recommendation, tank sizing, and financial views\\[4pt]
+$\Downarrow$ Axios JSON requests; shared workflow state in React Context\\[4pt]
+\textbf{FastAPI application}\\
+Demand and society routes \quad Catchment and forecast routes \quad
+ML recommendation and yield routes \quad ROI and tank-sizing routes\\[4pt]
+$\Downarrow$\\[4pt]
+\textbf{Calculation and data services}\\
+Demand and yield equations \quad Open-Meteo rainfall \quad
+Safety gate and bundled ML artifacts \quad Daily and monthly water balances\\
+Deterministic ROI and Monte Carlo scenarios\\[4pt]
+\textbf{Optional integrations:} Esri World Imagery tiles and Groq advisory\\
+\textbf{Persistence boundary:} PostgreSQL schema and selected database paths;
+ordinary society CRUD remains in an in-memory store
+\end{minipage}}
+\caption{Implemented WaterWallet request and service architecture.
+Optional integrations and persistence paths are distinguished from the
+core calculation flow.}
+\label{fig:architecture}
+\end{figure*}
+
+\subsection{Client and Service Organization}
+
+The client is implemented with React and Vite. Its principal views are
+the Virtual Meter, Map Studio, and ROI Dashboard. React Context carries
+society, catchment, rainfall, demand, and tank-capacity values between
+views. The map view uses Leaflet and Esri World Imagery tiles; Turf.js
+calculates polygon area from the traced boundary. API requests are made
+through an Axios client to the FastAPI backend.
+
+The backend registers routers for authentication, society and demand
+operations, geospatial catchment calculations, ML inference, ROI and tank
+sizing, and advisory generation. Pydantic schemas validate request and
+response data. The current calculation services and their principal
+interfaces are summarized in Table~\ref{tab:api}.
+
+\begin{table}[htbp]
+\caption{Principal Backend Interfaces}
+\label{tab:api}
+\centering
+\small
+\begin{tabular}{p{0.39\columnwidth}p{0.53\columnwidth}}
+\toprule
+\textbf{Endpoint} & \textbf{Role in the workflow}\\
+\midrule
+\url{/api/auth/*} & Register, authenticate, and retrieve the current user\\
+\url{/api/societies/baseline} & Calculate total and potable/non-potable demand\\
+\url{/api/catchment/calculate} & Retrieve monthly rainfall and calculate yield\\
+\url{/api/catchment/forecast} & Forecast rainfall and forecast-based yield\\
+\url{/api/ml/recommend} & Apply the safety gate, then classify configuration\\
+\url{/api/ml/yield} & Estimate monthly yield with physics fallback\\
+\url{/api/roi/simulate} & Calculate deterministic multi-year ROI\\
+\url{/api/roi/monte-carlo} & Estimate a break-even distribution\\
+\url{/api/roi/tank-sizer} & Compare candidate tanks using daily rainfall\\
+\url{/api/advisory/water} & Request an optional Groq-generated advisory\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Persistence and External Dependencies}
+
+SQLAlchemy models and an Alembic migration define PostgreSQL tables for
+users, societies, billing entries, and analysis snapshots. Registration
+and login use the database-backed authentication path; passwords are
+hashed with bcrypt and access tokens use JWT. The frontend also supports
+a guest path. This database support is not equivalent to end-to-end
+persistent society management: ordinary society CRUD and billing routes
+currently use an authenticated, in-memory store, while explicitly named
+database endpoints provide selected read and analysis operations.
+
+Open-Meteo supplies rainfall data, and Esri supplies map tiles. The
+advisory route is optional, requires a configured Groq API key, and sends
+the submitted society metrics to that external service. The advisory is
+prompt-constrained to return structured text; it is not a validated
+engineering recommendation. Core deterministic calculations do not
+require the advisory service.
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Demand Estimation}
+\label{sec:demand}
+
+Let $F$ denote the number of flats and $O$ the average occupants per flat.
+The implementation converts their product to an integer occupant count
+$N$ and uses the configured IS~1172 baseline $q=135$ L/person/day:
+\begin{align}
+  N &= \lfloor F O \rfloor,\\
+  D_0 &= N q,\\
+  D &= \operatorname{round}\!\left[
+      D_0(1 + 0.15 I_{\mathrm{UFW}})(1 + 0.10)
+      \right],
+  \label{eq:demand}
+\end{align}
+where $I_{\mathrm{UFW}}$ is 1 when the optional 15\% UFW allowance is
+enabled and 0 otherwise. The 10\% demand buffer is applied in either
+case. The adjusted demand is divided into potable and non-potable
+components using the configured 70:65 LPCD proportions; the non-potable
+component is the intended RWH demand target. Annual demand is calculated
+as the daily value multiplied by 365. For monthly views, the frontend
+distributes annual demand using configured seasonal weights and
+normalizes the weights so their sum equals the annual total.
+
+The Virtual Meter accepts society and billing inputs, including
+municipal bills, tanker counts, tanker unit costs, and tanker capacities.
+These values provide financial context; the billing interface does not
+constitute an independently audited consumption record.
+
+\subsection{Catchment, Rainfall, and Yield}
+\label{sec:yield}
+
+The user traces a rooftop polygon on the map. Turf.js computes its
+geodesic area, and the selected location is used for rainfall retrieval.
+For monthly rainfall depth $P_m$ (mm), gross area $A_g$ (m$^2$), roof
+runoff coefficient $C_r$, and usable-area factor $\eta=0.80$, the
+physics-based estimate is
+\begin{equation}
+  Y_m = \frac{P_m A_g C_r \eta}{1000}
+  \quad \mathrm{kL},
+  \label{eq:yield}
+\end{equation}
+using the equivalence of 1 mm of rainfall on 1 m$^2$ to 1 litre. The
+configured runoff coefficients are 0.90 for concrete and metal, 0.75 for
+tiles, and 0.45 for gravel. The area factor is intended to account for
+roof equipment and other unusable surface; these coefficients are
+assumptions rather than measurements of runoff at the user's building.
+
+The catchment endpoint averages monthly totals across the configured
+rolling set of 15 complete calendar years. If that monthly retrieval
+fails, the service logs the failure and uses a regional monthly
+climatological fallback. The daily rainfall endpoint used for tank sizing
+has different failure behavior: it rejects malformed or incomplete
+data, omits incomplete calendar years, and reports an error when no
+complete year is available. These two data paths should not be conflated.
+
+\subsection{Seasonal Rainfall Forecast}
+\label{sec:forecast}
+
+The forecast endpoint preserves chronological monthly totals for the
+same configured historical period and requires at least 36 observations.
+It fits a seasonal Auto-ARIMA model with period 12, selecting orders
+through an AIC-based search, and returns between 1 and 24 monthly
+forecasts with confidence intervals and the selected model orders.
+Forecast-derived yield is calculated with Eq.~(\ref{eq:yield}).
+
+If historical monthly retrieval fails, the service constructs a
+deterministic regional synthetic history from fallback monthly normals
+and fits the forecasting model to that history. The forecast response
+exposes the history source and a fallback flag; the interface labels a
+forecast based on synthetic regional history. This provenance improves
+interpretability but is not evidence of forecast accuracy.
+
+\subsection{Configuration Recommendation and Safety Gate}
+\label{sec:classifier}
+
+The recommendation endpoint offers three configuration labels:
+\textit{Storage-Only}, \textit{Borewell-Recharge}, and \textit{Hybrid}.
+Before loading the classifier, the deterministic Tier~1 gate forces a
+Storage-Only result when any configured check is triggered: coastal
+distance is at most 2.5 km; no borewell is present; soil permeability
+class is below 2; or a present borewell is shallower than 30 m. A gate
+result includes a reason and does not invoke ML or SHAP. These thresholds
+are implemented screening rules; this paper does not assert that they
+are universally applicable hydrogeological standards.
+
+When the gate passes, Tier~2 uses a bundled calibrated Random Forest
+classifier. Its seven inputs are roof area, borewell presence and depth,
+soil permeability class, coastal distance, annual rainfall, and peak
+daily rainfall. Training code generates 600 synthetic site profiles and
+assigns each label through a deterministic rule based on site
+attributes. The classifier therefore approximates those labeling rules;
+it has not been trained on a representative dataset of independently
+surveyed housing societies. SHAP contributions are returned when the
+explanation dependency and model are available. The response carries an
+explicit warning when explanations are unavailable, and feature
+attributions are not presented as causal explanations.
+
+\subsection{Monthly Yield Regressor}
+\label{sec:yield-model}
+
+The backend also loads a Random Forest regressor for monthly yield. The
+training script constructs inputs from historical monthly rainfall and
+multiple roof areas, then generates its target from the same
+runoff-and-usability equation in Eq.~(\ref{eq:yield}). At inference, the
+API supplies twelve monthly rainfall values and corresponding lag,
+seasonal, and area features. If model files or their compatible
+scikit-learn version are unavailable, the service falls back to the
+physics equation and returns the selected source in its response.
+
+Because the training target is equation-derived rather than measured
+catchment yield, the regressor is a learned approximation to the
+configured physics calculation. Its presence does not demonstrate
+improved prediction over the equation, and no predictive-performance
+metric is claimed here.
+
+\subsection{Daily Tank Sizing}
+\label{sec:tank}
+
+Tank sizing uses daily rainfall grouped by complete calendar year. For
+each candidate capacity $K$, the service simulates each day in sequence.
+Daily inflow is
+\begin{equation}
+  I_d = \max(0,P_d) A_u C_r (1-f_{\mathrm{ff}}),
+  \label{eq:inflow}
+\end{equation}
+where $P_d$ is daily rainfall, $A_u$ is usable roof area, and
+$f_{\mathrm{ff}}$ is the first-flush fraction. The tank serves eligible
+non-potable demand $D_d$ from current storage plus inflow:
+\begin{align}
+  S_d &= \min(K_d + I_d,D_d),\\
+  K_{d+1} &= \min\!\left(K,\max(0,K_d+I_d-D_d)\right),
+\end{align}
+where $K_d$ is storage at the start of the day and $S_d$ is useful
+rainwater served. Overflow is tracked separately. When recharge is
+enabled, overflow up to the configured daily infiltration capacity is
+recorded as recharge; excess is recorded as lost overflow. Neither
+recharge nor lost overflow is counted as financial savings in this
+service.
+
+The endpoint compares caller-supplied capacities (default candidates
+range from 5,000 to 70,000 L). It selects the smallest candidate meeting
+the requested average reliability when possible. If not, it applies a
+fallback reliability target or a diminishing-returns capacity heuristic.
+The default 40\% reliability target, costs, recharge capacity, and
+diminishing-returns threshold are prototype parameters, not universal
+design standards. The service reports the candidate metrics, selection
+status, and years used so a user can inspect the basis of the result.
+
+\subsection{Financial Analysis}
+\label{sec:roi}
+
+The deterministic ROI service computes an annualized upper-bound
+estimate: it caps annual calculated yield at annual demand but does not
+simulate within-year tank storage. Eligible yield offsets tanker volume
+first and then municipal volume. Gross savings are valued at the current
+tanker and municipal rates, with tanker escalation supplied by the caller
+and municipal escalation set to 5\% per year. Annual maintenance is
+modeled as 3\% of installation cost:
+\begin{align}
+  G_y &= V_{\mathrm{tank},y}R_{\mathrm{tank},y}
+       + V_{\mathrm{mun},y}R_{\mathrm{mun},y},\\
+  N_y &= G_y - 0.03\,C_{\mathrm{install}},\\
+  B_y &= \sum_{j=1}^{y} N_j - C_{\mathrm{install}},
+  \label{eq:roi}
+\end{align}
+where $G_y$ is gross annual savings, $N_y$ is net annual savings, and
+$B_y$ is cumulative net benefit. The service reports the first
+break-even point it finds, yearly savings, and cumulative expenditure
+paths. Its assumptions make it distinct from the storage-constrained
+simulations below.
+
+The Monte Carlo service samples 1,000 scenarios by default. If a
+site-specific monthly rainfall baseline is supplied, each month's value
+is sampled independently and uniformly from 80\% to 120\% of its
+baseline; otherwise the service uses a saved monthly percentile table
+when present or a regional fallback distribution. The current service
+uses a fixed pseudorandom seed. Monthly inflow is converted to yield
+using roof area, roof-surface runoff, and usable-area factors. A
+month-by-month tank balance carries storage within the sampled year and
+caps it at tank capacity. The resulting annual useful volume is valued
+over a ten-year financial horizon with tanker escalation, municipal
+escalation, and maintenance costs. The response contains break-even
+probabilities, percentiles, never-break-even share, and scenario-source
+indicators. Monthly values are sampled independently, and this engine
+does not model inter-month statistical dependence, multi-year drought
+sequences, or recharge-derived savings.
+
+\section{Implementation and Operational Requirements}
+\label{sec:implementation}
+
+Table~\ref{tab:stack} summarizes the principal implementation
+technologies and their roles.
+
+\begin{table}[htbp]
+\caption{Implementation Components}
+\label{tab:stack}
+\centering
+\small
+\begin{tabular}{p{0.28\columnwidth}p{0.62\columnwidth}}
+\toprule
+\textbf{Component} & \textbf{Implemented role}\\
+\midrule
+React 19, Vite & Browser-based workflow and production frontend build\\
+Leaflet, Turf.js & Map display, polygon interaction, and geodesic area\\
+FastAPI, Pydantic & HTTP API, request validation, and response schemas\\
+SQLAlchemy, Alembic & ORM models and database schema migration\\
+scikit-learn, Joblib & Bundled configuration and yield model inference\\
+SHAP & Optional tree-model feature attributions\\
+pmdarima & Seasonal rainfall forecast service\\
+Open-Meteo & Historical precipitation retrieval\\
+Groq (optional) & Structured natural-language advisory\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The frontend requires network access for rainfall retrieval, map imagery,
+and the optional advisory. Backend settings provide the database URL and
+JWT configuration; the advisory additionally requires a Groq API key.
+The map and external rainfall calls transmit location coordinates to
+their respective providers. The advisory request includes the society
+name and submitted summary metrics. These integrations are operational
+dependencies and should be considered in deployment privacy and
+availability reviews.
+
+\section{Evaluation and Results}
+\label{sec:evaluation}
+
+This paper reports implementation behavior, not a hydrological field
+trial. No measurements of harvested runoff, storage operation, groundwater
+response, or audited society savings were available for independent
+validation. Model performance figures from saved offline experiments
+are not reported as runtime evaluation results. Likewise, no forecast
+accuracy, classifier generalization, SHAP stability, execution-latency,
+or payback outcome is inferred from the mere availability of a model or
+service.
+
+The current backend test suite covers selected software invariants. The
+tank-sizer tests exercise year-length handling, water-volume
+reconciliation, zero-capacity behavior, monotonic capacity comparisons,
+and finite recharge overflow. Monte Carlo integration tests exercise the
+use of supplied monthly rainfall, invalid rainfall rejection, and the
+effect of different rainfall inputs on downstream results. ROI tests
+cover the deterministic calculation contract. These tests verify
+specific code paths with controlled inputs; they do not establish the
+accuracy of external rainfall data, the correctness of project
+hydrogeological thresholds, real-world system reliability, or financial
+returns. During this revision, all 17 backend \texttt{unittest} cases and
+all 18 frontend unit tests passed; the frontend production build and
+ESLint checks also completed successfully. The build emitted a
+bundle-size warning, which does not change the calculation evidence
+described above.
+
+\begin{table}[htbp]
+\caption{Evidence Scope for Implemented Outputs}
+\label{tab:evidence}
+\centering
+\small
+\begin{tabular}{p{0.28\columnwidth}p{0.60\columnwidth}}
+\toprule
+\textbf{Output} & \textbf{Evidence and interpretation}\\
+\midrule
+Demand and yield & Deterministic equations and schemas are implemented; site inputs and coefficients remain assumptions.\\
+Rainfall forecast & API and seasonal model path are implemented; current holdout accuracy is not reported.\\
+Configuration class & Bundled model is trained on synthetic rule-derived labels; external generalization is unverified.\\
+Yield regression & Training target is physics-generated; independent observed-yield performance is unverified.\\
+Tank sizing & Daily water-balance logic is covered by focused unit tests; no installed tank was measured.\\
+ROI scenarios & Financial services are implemented and tested with controlled inputs; no realized savings are claimed.\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+WaterWallet's principal value is workflow integration: society-level
+inputs, geospatial catchment estimation, rainfall data, site screening,
+and financial scenarios are presented together. Its separation of
+deterministic constraints from model-based recommendations makes the
+decision path more inspectable than a single opaque score. The daily tank
+simulator also distinguishes useful water, recharge overflow, lost
+overflow, and unmet demand rather than treating all roof runoff as
+financially recoverable.
+
+Several limitations constrain interpretation:
+\begin{enumerate}
+  \item \textbf{Synthetic configuration labels.} The classifier learns
+    rule-generated labels from a synthetic dataset. It cannot establish
+    suitability for actual aquifers or discover site relationships
+    absent from those rules. Independent surveys and expert-labelled
+    sites are needed.
+  \item \textbf{Unvalidated safety thresholds.} Coastal distance,
+    permeability class, borewell presence, and borewell depth are
+    simplified screening inputs. The gate's configured cutoffs are not a
+    substitute for local hydrogeological investigation or regulatory
+    review.
+  \item \textbf{No measured yield data.} The yield regressor is trained
+    against targets calculated from the same physics equation it
+    approximates. No observed rooftop inflow dataset is used to show an
+    advantage over that equation.
+  \item \textbf{Rainfall provenance and uncertainty.} Historical
+    retrieval may use a regional normal fallback; forecast-history
+    retrieval may synthesize a regional series. Responses expose this
+    provenance, but regional fallback data are not site-specific and
+    the paper does not claim forecast accuracy for a given society.
+  \item \textbf{Financial simplifications.} Deterministic ROI uses an
+    annualized yield cap rather than daily storage. Monte Carlo sampling
+    perturbs monthly rainfall independently and does not model
+    multi-year drought sequences or recharge value. Cost, tariff,
+    escalation, and maintenance inputs require local quotations and
+    review.
+  \item \textbf{Partial persistence and external services.} Ordinary
+    society and billing flows use in-memory state despite the presence
+    of database schemas and selected database endpoints. Rainfall,
+    imagery, and optional advisory functions depend on external
+    services.
+  \item \textbf{Feasibility-screening boundary.} WaterWallet does not
+    perform structural roof assessment, detailed filter design, water
+    quality analysis, groundwater modelling, or regulatory approval.
+\end{enumerate}
+
+Future work should prioritize collecting real rainfall and harvested
+volume observations from monitored sites; validating the screening rules
+with qualified hydrogeologists; publishing a temporally held-out
+forecast evaluation with data provenance; and comparing the yield model
+against independently measured outcomes. The financial analysis could
+be unified with daily tank balances and site-specific cost quotations,
+while recharge benefits should remain excluded until defensible
+hydrogeological measurements are available. Completing transactional
+database persistence and retaining rainfall-source metadata with saved
+analysis snapshots would also improve operational reliability.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+WaterWallet is an implemented full-stack prototype for residential RWH
+feasibility analysis in the Mumbai Metropolitan Region. It links demand
+and billing inputs, map-derived catchment areas, rainfall retrieval and
+forecasting, a safety-gated configuration classifier, a physics-informed
+yield calculation, daily tank sizing, and deterministic and
+probabilistic financial analyses. The architecture combines React and
+FastAPI services with optional model explanations and an external
+language-model advisory.
+
+The current evidence supports describing the software components and
+their tested calculation paths, but not claiming field performance or
+generalizable predictive accuracy. Synthetic classifier labels,
+equation-derived yield targets, non-site-specific rainfall fallbacks, simplified
+financial assumptions, and incomplete persistence remain material
+limitations. WaterWallet should therefore be used as a pre-consultation
+decision aid, with final RWH configuration and construction determined
+through site-specific professional assessment.
+
+\begin{thebibliography}{00}
+
+\bibitem{bis1172}
+Bureau of Indian Standards, \textit{IS 1172:1993: Code of Basic
+Requirements for Water Supply, Drainage and Sanitation}, New Delhi,
+India, 1993.
+
+\bibitem{openmeteo}
+P. Zippenfenig, ``Open-Meteo.com Weather API,'' software, 2023,
+doi: 10.5281/ZENODO.7970649. [Online]. Available:
+\url{https://open-meteo.com/en/docs/historical-weather-api}
+
+\bibitem{hyndman}
+R. J. Hyndman and G. Athanasopoulos, \textit{Forecasting: Principles
+and Practice}, 3rd ed. Melbourne, Australia: OTexts, 2021. [Online].
+Available: \url{https://otexts.com/fpp3/}
+
+\bibitem{lundberg}
+S. M. Lundberg and S.-I. Lee, ``A unified approach to interpreting
+model predictions,'' in \textit{Advances in Neural Information
+Processing Systems}, vol. 30, 2017, pp. 4765--4774.
+
+\end{thebibliography}
+
+\end{document}

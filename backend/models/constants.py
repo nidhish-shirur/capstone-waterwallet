@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# IS 1172 — Code of Basic Requirements for Water Supply, Drainage and Sanitation
+# ---------------------------------------------------------------------------
+
+# Litres Per Capita Per Day (residential, with flush toilet + bath)
+IS_LPCD: float = 135.0
+
+# Disaggregated domestic demand components (CPHEEO / BIS urban norms)
+POTABLE_LPCD: float = 70.0       # Drinking, cooking, bathing, personal hygiene
+NON_POTABLE_LPCD: float = 65.0   # Toilet flushing, gardening, car washing, cleaning
+
+# Demand safety buffer (10 % above IS baseline)
+DEMAND_BUFFER_FACTOR: float = 1.10
+
+# ---------------------------------------------------------------------------
+# Rainwater Harvesting — yield calculation
+# ---------------------------------------------------------------------------
+
+# Fraction of rainfall that becomes usable runoff (typical RCC roof)
+RUNOFF_COEFFICIENT: float = 0.90
+
+# Runoff coefficients by roof surface type
+ROOF_RUNOFF_COEFFICIENTS: dict[str, float] = {
+    "concrete": 0.90,
+    "metal": 0.90,
+    "gravel": 0.45,
+    "tiles": 0.75,
+}
+
+
+# Fraction of roof area considered usable after exclusions (equipment, shading)
+USABILITY_FACTOR: float = 0.80
+
+# Unaccounted-For Water (UFW) distribution loss factor (15%)
+UFW_LOSS_FACTOR: float = 0.15
+
+# Combined yield factor: rainfall × runoff × usability
+YIELD_FACTOR: float = RUNOFF_COEFFICIENT * USABILITY_FACTOR   # ≈ 0.72
+
+# ---------------------------------------------------------------------------
+# Financial defaults
+# ---------------------------------------------------------------------------
+
+DEFAULT_WATER_TARIFF_PER_KL: float = 15.0   # ₹ per kilolitre (Mumbai approx.)
+DEFAULT_INSTALLATION_COST: float = 250_000.0  # ₹
+DEFAULT_TANK_CAPACITY_LITRES: float = 50_000.0
+DEFAULT_ANALYSIS_YEARS: int = 10

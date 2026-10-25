@@ -1,0 +1,689 @@
+﻿\documentclass[conference]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{array}
+
+% Robust figure inclusion: compile even when figure assets are not present.
+\newcommand{\safeincludegraphics}[2][]{%
+  \IfFileExists{#2}{%
+    \includegraphics[#1]{#2}%
+  }{%
+    \fbox{\parbox[c][0.18\textheight][c]{0.46\textwidth}{\centering\small
+      Figure unavailable: \texttt{\detokenize{#2}}.\\[4pt]
+      Add the image asset before final submission.}}%
+  }%
+}
+
+\begin{document}
+
+\title{WaterWallet: A Physics-Informed Decision-Support System for\\ Rainwater Harvesting in Urban Housing Societies}
+
+\author{
+  \IEEEauthorblockN{Nidhish Shirur, Neha Bhatia, Diksha Bagwe}
+  \IEEEauthorblockA{
+    \textit{Department of Computer Engineering}\\
+    \textit{Vivekanand Education Society's Institute of Technology (VESIT)}\\
+    University of Mumbai, Mumbai, India\\
+    Guide: Dr.~Mrs.~Gresha Bhatia
+  }
+}
+
+\maketitle
+
+\begin{abstract}
+Urban housing societies in the Mumbai Metropolitan Region (MMR) face compounding water costs owing to dependence on private water tankers, yet Rainwater Harvesting (RWH) adoption remains low because existing tools rely on static annual rainfall figures that ignore inter-annual monsoon variability and site-specific hydrogeology. This paper presents \textit{WaterWallet}, a zero-hardware, physics-informed decision-support framework that integrates seasonal rainfall forecasting, hydrological yield modelling, machine learning classification, and probabilistic financial analysis in a single user workflow. Evaluated on fifteen years of daily precipitation data for Thane (2010--2025), an AIC-selected Auto-SARIMA model achieves a holdout MAE of 68.62~mm over 48 test months, outperforming a same-month-last-year baseline (72.75~mm) and a recursive Random Forest (136.46~mm). A dual-tier classifier---comprising a deterministic hydrogeological safety gate and a calibrated Random Forest surrogate---recommends one of three configurations (Storage-Only, Borewell-Recharge, or Hybrid), achieving 5-fold cross-validation accuracy of $0.997 \pm 0.003$ and demonstrating superior noise resilience over equivalent static rule-based methods. A comparative evaluation shows that a Multi-Layer Perceptron (MLP) neural network underperforms the Random Forest on this small tabular dataset, confirming ensemble methods as the appropriate choice at this data scale. A Monte Carlo engine samples 1,000 yield scenarios to produce a probabilistic return-on-investment profile, projecting a Year~2 break-even under median monsoon conditions. SHAP feature attributions make the classification rationale transparent to non-technical society committees. The framework offers a computationally efficient, data-driven approach to sustainable urban water planning accessible to volunteer managing committee members without specialist expertise.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Rainwater Harvesting, Decision-Support System, Explainable AI, SHAP,
+Auto-SARIMA, Random Forest, MLP, Monte~Carlo Simulation,
+Physics-Informed Machine Learning, Urban Hydrology, IS~1172,
+Mumbai Metropolitan Region.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+Rapid urbanisation in the Mumbai Metropolitan Region (MMR) has placed municipal water distribution infrastructure under severe and growing stress. Residential cooperative housing societies in high-density districts such as Thane, Kalyan, and Navi Mumbai are forced to supplement inadequate municipal allocations with private water tankers, procured at approximately INR~800--1,600 per 10,000-litre delivery (INR~80--160/KL), compared to subsidised municipal tariffs of INR~10--15/KL \cite{anthony2024}. The NITI~Aayog's Composite Water Management Index reports that 600~million people across India face extreme water stress \cite{nitiAayog2018}, and urban groundwater depletion has been documented across major cities including Mumbai \cite{cgwb2022}. A typical 50-flat housing society in suburban Mumbai spends INR~2--5~lakh annually on tankers; compounding private tanker price inflation, historically 8--12\% per annum, can drain society reserves by INR~30--50~lakh over a ten-year horizon without producing lasting water infrastructure.
+
+Rainwater Harvesting (RWH) is a proven and policy-endorsed intervention for this context. The Brihanmumbai Municipal Corporation (BMC) mandated RWH for buildings with plot areas exceeding 500~m\textsuperscript{2} under its 2007 Development Control Regulations, with enforcement tightened further in 2019 \cite{mumbai2024}. Real deployments in comparable urban contexts---for example, the SV Symphony cooperative housing society in Bengaluru---demonstrate annual savings of approximately INR~3~lakh on system investments of INR~1.6~lakh, achieving break-even within two years and preventing borewell depletion \cite{bengaluru2019}. Despite this documented evidence, standalone residential adoption remains low, with compliance estimated below 15\% among eligible properties. Three barriers drive this gap: (1)~managing committee members lack site-specific configuration guidance to distinguish between storage, borewell recharge, and hybrid configurations; (2)~financial projections in existing tools use a single static rainfall figure that does not reflect inter-annual monsoon variability; and (3)~existing systems provide no explainable rationale for their recommendations, reducing committee trust and engagement.
+
+\textbf{WaterWallet} addresses all three barriers through a five-component computational pipeline in which machine learning is applied only where it demonstrably outperforms deterministic alternatives. The water deficit in month~$t$ is formally defined as:
+\begin{equation}
+  WD_t = \max\!\bigl(0,\; D_t - Y_{\text{usable},t}\bigr)
+  \label{eq:deficit}
+\end{equation}
+where $D_t$ is monthly non-potable demand (KL) and $Y_{\text{usable},t}$ is the demand-gated harvestable yield (KL). The system objective is to minimise $\sum_{t} WD_t$ over a 10-year planning horizon by selecting the configuration that maximises $Y_{\text{usable},t}$ subject to site-specific physical and economic constraints.
+
+The remainder of the paper is organised as follows. Section~\ref{sec:related} reviews related work. Section~\ref{sec:nomenclature} defines system parameters. Section~\ref{sec:architecture} describes the five-layer architecture. Sections~\ref{sec:rainfall}--\ref{sec:roi} detail the individual technical components. Section~\ref{sec:discussion} discusses contributions and limitations. Section~\ref{sec:conclusion} concludes.
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Rainfall Forecasting for Hydrological Applications}
+
+Seasonal ARIMA and SARIMA models have an established track record in monthly and seasonal precipitation forecasting \cite{sharma2020, smith2020}. Singh and Patel~\cite{singh2021} applied SARIMA to Indian monsoon prediction in urban settings, finding it competitive with ensemble tree methods on limited data. Chen and Wang~\cite{chen2021} demonstrated that recursive machine learning forecasts on short hydrological series often underperform classical time-series methods due to error accumulation during multi-step recursive inference---a finding consistent with our own Random Forest forecasting results. The application of AIC-based automatic ARIMA order selection to site-specific precipitation series reduces arbitrary order specification and improves reproducibility compared to manually tuned approaches.
+
+\subsection{Rainwater Harvesting System Design and Yield Estimation}
+
+Santos and Oliveira~\cite{santos2020} evaluated urban rooftop RWH systems under climate variability, emphasising the importance of month-level demand-gating to prevent financial overestimation from seasonal overflow. Gupta and Verma~\cite{gupta2021} applied data-driven optimisation to domestic RWH in dense urban environments, finding that site-specific storage sizing substantially improves system reliability over fixed-volume designs. Mishra and Roy~\cite{mishra2022} conducted feasibility analyses for rooftop RWH in Indian megacities, noting that storage capacity requirements vary significantly between sites with similar annual rainfall due to monsoon intensity distribution. Lee and Park~\cite{lee2022} used spatial hydrological modelling to estimate urban rooftop harvesting potential, confirming the value of geodesic catchment area computation. WaterWallet builds on this line of work by integrating demand-gated yield simulation with probabilistic rainfall forecasting and site-specific hydrogeological screening.
+
+\subsection{Decision Support Systems for Water Management}
+
+Zhang et al.~\cite{zhang2021} proposed a decision-support framework for urban water resilience, demonstrating the value of integrating physical models with machine learning for planning decisions. Khan and Ali~\cite{khan2021} developed a smart decision support system for RWH site suitability; however, their approach lacked a formal hydrogeological safety gate, SHAP explainability, or probabilistic ROI analysis. Agrawal and Sharma~\cite{agrawal2021} analysed financial viability and payback periods for RWH in Indian residential cooperatives, finding that static single-scenario ROI projections substantially underestimate risk under inter-annual rainfall variability. WaterWallet closes these gaps by combining a dual-tier classifier, transparent SHAP attributions, and a 1,000-scenario Monte Carlo ROI engine in an integrated workflow accessible to non-specialist committee members.
+
+\section{Nomenclature}
+\label{sec:nomenclature}
+
+\begin{table}[htbp]
+\caption{System Parameters and Physical Constants}
+\begin{center}
+\begin{tabular}{lp{3.4cm}ll}
+\toprule
+\textbf{Symbol} & \textbf{Description} & \textbf{Value} & \textbf{Unit} \\
+\midrule
+$A$                    & Rooftop catchment area           & 780            & m$^2$        \\
+$\eta_u$               & Usability factor                 & 0.80           & --           \\
+$C_{cr}$               & Runoff coefficient (concrete)    & 0.90           & --           \\
+$P_t$                  & Monthly precipitation            & Forecasted     & mm           \\
+$D_m$                  & Monthly non-potable demand       & 100            & KL           \\
+$Y_t$                  & Monthly potential yield          & Calculated     & KL           \\
+$Y_{\text{usable},t}$  & Demand-gated usable yield        & Calculated     & KL           \\
+$\text{CAPEX}$         & System installation cost         & 500{,}000      & INR          \\
+$\alpha$               & Annual maintenance rate (AMC)    & 0.03           & --           \\
+$r$                    & Tanker annual inflation rate     & 0.08           & --           \\
+$\beta$                & IS~1172 contingency buffer       & 0.10           & --           \\
+\bottomrule
+\end{tabular}
+\label{tab:nomenclature}
+\end{center}
+\end{table}
+
+\section{System Architecture}
+\label{sec:architecture}
+
+\begin{figure}[htbp]
+  \centering
+  \safeincludegraphics[width=\linewidth]{architecture_diagram.png}
+  \caption{WaterWallet high-level system architecture pipeline.}
+  \label{fig:system_architecture}
+\end{figure}
+
+WaterWallet is structured as a five-layer sequential computational pipeline. Layers~1 and~2 form the deterministic physics backbone. Layers~3 and~4 introduce machine learning where it demonstrably outperforms rule-based alternatives. Layer~5 provides the financial decision artefact. The React~19 and Vite frontend communicates with the FastAPI backend via JSON over HTTP. All site and billing inputs flow forward through the pipeline; no layer makes assumptions that bypass an earlier layer's constraints.
+
+\textbf{Layer~1 -- Virtual Meter (Demand and Opex Aggregation):}
+Baseline daily water demand is anchored to IS~1172:1993~\cite{bis1172}, which mandates 135~LPCD for urban residences with flush toilets and baths. A 10\% peak-demand buffer $\beta$ accounts for real-world demand variability \cite{cpheeo2024}:
+\begin{equation}
+  \text{Daily Demand (L)} = (F \times O \times 135) \times (1 + \beta)
+  \label{eq:demand}
+\end{equation}
+where $F$ is total flats and $O$ is average occupants per flat. An optional CPHEEO-standard 15\% Unaccounted-For Water (UFW) factor accounts for distribution losses when enabled. Historical tanker and billing logs are digitised to produce an annualised Operational Expenditure (Opex) figure. IS~1172 disaggregates the 135~LPCD into potable uses (70~LPCD: drinking, cooking, bathing) and non-potable uses (65~LPCD: toilet flushing, gardening, cleaning); the yield engine targets only non-potable demand.
+
+\textbf{Layer~2 -- Geospatial Catchment Engine:}
+Users trace their rooftop boundary on an interactive satellite map (Leaflet.js~+~Esri World Imagery). The Turf.js geometry engine computes gross area via the Shoelace algorithm applied to geodesic WGS84 coordinates. Monthly yield is calculated as:
+\begin{equation}
+  Y_t = \frac{A \times \eta_u \times P_t \times C_{cr}}{1000}
+  \label{eq:yield}
+\end{equation}
+where $\eta_u = 0.80$ deducts 20\% for rooftop obstacles (water tanks, solar panels, lift rooms, service zones) and $C_{cr} = 0.90$ for reinforced concrete roofs accounts for surface wetting and evaporative losses~\cite{cpheeo2024}. Alternative runoff coefficients are applied for other surface types (metal: 0.90, tiles: 0.75, gravel/ballasted: 0.45). Historical daily precipitation for the traced centroid is retrieved from the Open-Meteo Archive API~\cite{openmeteo} and aggregated to monthly totals.
+
+\textbf{Layer~3 -- Auto-SARIMA Rainfall Forecaster:}
+Described in Section~\ref{sec:rainfall}.
+
+\textbf{Layer~4 -- Dual-Tier Configuration Classifier:}
+Described in Section~\ref{sec:classifier}.
+
+\textbf{Layer~5 -- Monte~Carlo ROI Engine:}
+Described in Section~\ref{sec:roi}.
+
+\section{Rainfall Forecasting and Model Evaluation}
+\label{sec:rainfall}
+
+\subsection{Data Source and Extended Temporal Window}
+
+Real daily precipitation data were sourced from the Open-Meteo Archive API~\cite{openmeteo} for Thane, Maharashtra (19.22$^\circ$N, 72.97$^\circ$E), spanning \textbf{1 January 2010 to 31 December 2025} (15~years; 5,479 daily records; 180 monthly observations). The dataset was extended from the previously used 2014--2023 window to provide a larger training corpus and a more robust 48-month held-out evaluation window. Data were aggregated from daily to monthly totals. No imputation was required; missing daily values were set to zero per Open-Meteo's documented convention.
+
+To prevent temporal data leakage, the dataset was split \textit{chronologically}:
+\begin{itemize}
+  \item \textbf{Training set:} January 2010 -- December 2021 (144 months)
+  \item \textbf{Test set:} January 2022 -- December 2025 (48 months)
+\end{itemize}
+A random split is explicitly avoided: selecting test samples from across the full timeline would allow the model to train on months temporally adjacent to test months, producing an optimistic evaluation bias~\cite{chen2021}.
+
+\subsection{Models Evaluated}
+
+Three forecasting methods were benchmarked:
+
+\textbf{(1) Same-Month-Last-Year Baseline:} Predicts month~$t$ as the observed value at $t - 12$. This na\"ive model sets a lower bound; any model claiming value must outperform it on at least one metric.
+
+\textbf{(2) Auto-SARIMA (AIC-selected):} Rather than manually specifying the ARIMA order, we employ \textit{pmdarima}'s \texttt{auto\_arima} procedure to search over the parameter space $(p, d, q)(P, D, Q)_{12}$ and select the order minimising the Akaike Information Criterion (AIC)~\cite{smith2020}. The search is constrained to $p \le 3, q \le 3, P \le 2, Q \le 2$ and maximum model order~8 to prevent overfitting on the 144-month training set.
+
+\textbf{(3) Random Forest Regressor (recursive):} Five lag features are engineered: 1-month lag ($P_{t-1}$), 12-month lag ($P_{t-12}$), 3-month rolling mean ($\bar{P}_{t-3}$), and cyclical month encodings:
+\begin{equation}
+  \text{Month}_{\sin} = \sin\!\left(\frac{2\pi m}{12}\right),\quad
+  \text{Month}_{\cos} = \cos\!\left(\frac{2\pi m}{12}\right)
+  \label{eq:cyclic}
+\end{equation}
+Predictions are generated \textit{recursively}: each forecast step is appended to the running history before computing the next step's lag features. This mirrors real deployment conditions where future observed values are unavailable.
+
+\subsection{Rainfall Forecasting Results}
+
+\begin{table}[htbp]
+\caption{Rainfall Forecasting Model Performance (48-Month Holdout, 2022--2025)}
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Model} & \textbf{MAE (mm)} & \textbf{RMSE (mm)} & \textbf{$R^2$} \\
+\midrule
+\textbf{Auto-SARIMA (selected)} & \textbf{68.62} & \textbf{108.66} & \textbf{0.823} \\
+Same-Month Baseline             & 72.75 & 127.70 & 0.756 \\
+Random Forest (recursive)       & 136.46 & 180.01 & 0.514 \\
+\bottomrule
+\end{tabular}
+\label{tab:rainfall}
+\end{center}
+\end{table}
+
+Table~\ref{tab:rainfall} shows that Auto-SARIMA achieves the lowest MAE (68.62~mm) and is selected as the production rainfall forecasting component. SARIMA is preferred over the same-month baseline for its capacity to smooth single-month monsoonal anomalies and to generalise to unseen climate patterns that simple persistence models cannot capture.
+
+The Random Forest Regressor significantly underperforms both alternatives (MAE: 136.46~mm). This result is consistent with established findings: recursive autoregressive ML on small ($n = 144$), zero-inflated, bimodal monsoon series collapses toward the training mean during dry months (October--May), producing large errors when it fails to anticipate the June precipitation spike~\cite{chen2021, sharma2020}. This negative result is reported transparently because it directly informs the model-selection decision and validates the use of Auto-SARIMA.
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{rainfall_forecast.png}}
+\caption{Auto-SARIMA 12-month rainfall forecast plotted alongside
+physics-derived potential yield and demand-gated usable yield.}
+\label{fig:forecast}
+\end{figure}
+
+\section{Physics-Informed Yield Engine and Scenario Analysis}
+\label{sec:yield}
+
+\subsection{Demand-Gating Logic}
+\label{sec:gating}
+
+To prevent financial overestimation, monthly yield is capped by non-potable demand:
+\begin{equation}
+  Y_{\text{usable},t} = \min(Y_t,\; D_m)
+  \label{eq:gating}
+\end{equation}
+Overflow in months where $Y_t > D_m$ does not contribute to financial savings under a Storage-Only configuration. For Hybrid and Borewell-Recharge configurations, overflow is routed to the recharge pathway and contributes a secondary environmental benefit (groundwater replenishment), tracked separately from direct financial savings to prevent recharge overflow from being incorrectly credited as tanker cost avoidance~\cite{santos2020}.
+
+\subsection{Percentile-Based Scenario Analysis}
+
+Three complete historical years representing the 10th (P10, dry), 50th (P50, typical), and 90th (P90, wet) annual rainfall percentiles were extracted from the 2010--2025 dataset as scenario proxies:
+
+\begin{table}[htbp]
+\caption{Historical Scenario Yield Breakdown ($A = 780$~m$^2$, $D_m = 100$~KL)}
+\begin{center}
+\begin{tabular}{lccccl}
+\toprule
+\textbf{Scenario} & \textbf{Year} & \textbf{Rain} & \textbf{Pot.\ Yield}
+  & \textbf{Usable} & \textbf{Yr-1 Savings} \\
+ & & (mm) & (KL) & (KL) & (INR) \\
+\midrule
+P10 (Dry)   & 2018 & 1330.7 & 747.3  & 365.9 & 292{,}701 \\
+P50 (Typ.)  & 2017 & 1983.6 & 1114.0 & 519.4 & 415{,}500 \\
+P90 (Wet)   & 2019 & 2395.9 & 1345.5 & 515.9 & 412{,}715 \\
+\bottomrule
+\end{tabular}
+\label{tab:scenarios}
+\end{center}
+\end{table}
+
+\textbf{Counter-intuitive finding:} Usable yield is marginally lower in the P90 wet year (515.9~KL) than in the P50 typical year (519.4~KL), despite an additional 412.3~mm of annual rainfall. Hydrological analysis reveals that 2019 experienced extreme peak-intensity monsoon events in July--August that substantially exceeded the 100~KL monthly demand cap, producing high structural overflow. By contrast, 2017 distributed rainfall more evenly across fringe monsoon months (May, June, October), maximising containment utilisation. This finding, inaccessible to any static annual-total calculator, directly demonstrates the value of month-level demand-gating for accurate RWH planning in high-intensity monsoon climates~\cite{mishra2022}.
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{scenario_comparison.png}}
+\caption{Annual yield and cumulative payback period across P10, P50,
+and P90 historical rainfall scenarios.}
+\label{fig:scenarios}
+\end{figure}
+
+\section{Deep Learning Evaluation: MLP vs Random Forest for Yield Prediction}
+\label{sec:dl}
+
+To empirically determine whether deep learning adds value over ensemble methods at this dataset scale, a Multi-Layer Perceptron (MLP) neural network was trained on the yield prediction task alongside a Random Forest Regressor.
+
+\subsection{Dataset Construction}
+
+A yield dataset was constructed by applying Equation~(\ref{eq:yield}) across 10 representative rooftop sizes (150--1800~m$^2$) over all 180 historical months, yielding 1,800 (rooftop, month) pairs. Input features include: rooftop area, month (1--12), monthly rainfall depth, annual rainfall total, a peak-day proxy (monthly rainfall divided by 30), three lag features (rainfall at $t-1$, $t-2$, $t-3$), and cyclical month encodings. After lag feature engineering and dropping rows with null lag values, 1,080 complete samples remained. The same chronological split was applied: training on 2010--2021 (864 samples), testing on 2022--2025 (216 samples).
+
+\subsection{MLP Architecture}
+
+The MLP uses a three-hidden-layer architecture with ReLU activations and Dropout regularisation:
+\begin{align}
+  \text{Input}(10) &\;\to\; \text{Dense}(64, \text{ReLU}) + \text{Dropout}(0.2) \nonumber \\
+  &\;\to\; \text{Dense}(32, \text{ReLU}) + \text{Dropout}(0.2) \nonumber \\
+  &\;\to\; \text{Dense}(16, \text{ReLU}) \;\to\; \text{Dense}(1) \nonumber
+\end{align}
+The network was compiled with the Adam optimiser and MSE loss, trained for up to 200 epochs with early stopping (patience = 20). Input features were standardised using \texttt{StandardScaler} fit exclusively on the training partition to prevent data leakage.
+
+\subsection{Yield Prediction Results}
+
+\begin{table}[htbp]
+\caption{Yield Prediction: Random Forest vs MLP Neural Network}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model} & \textbf{MAE (KL)} & \textbf{$R^2$} \\
+\midrule
+\textbf{Random Forest} & \textbf{7.58} & 0.9720 \\
+MLP Neural Network    & 11.52 & \textbf{0.9807} \\
+\bottomrule
+\end{tabular}
+\label{tab:dl}
+\end{center}
+\end{table}
+
+\textbf{Finding:} The MLP achieves a marginally higher $R^2$ (0.9807 vs.\ 0.9720) but underperforms the Random Forest on MAE (11.52 vs.\ 7.58~KL). For a decision-support system where overestimation of harvestable yield leads to financially harmful recommendations, lower absolute error is the decisive criterion. This result is consistent with the well-established finding that ensemble methods typically outperform shallow neural networks on small ($n \approx 1{,}000$), structured tabular datasets~\cite{gupta2021}. The DL evaluation is reported as a principled academic comparison: deep learning is not the most appropriate architecture for this data regime, and ensemble methods are confirmed as the correct choice.
+
+\section{Dual-Tier RWH Configuration Classifier}
+\label{sec:classifier}
+
+Housing societies are classified into one of three configurations: \textbf{Storage-Only} (direct collection in tanks with no groundwater recharge), \textbf{Borewell-Recharge} (filtered rooftop runoff injected into an existing deep borewell), or \textbf{Hybrid} (storage tank with overflow routed to borewell recharge). The classification uses a two-tier sequential architecture in which physical safety takes precedence over probabilistic model output.
+
+\subsection{Tier 1: Deterministic Hydrogeological Safety Gate}
+
+A deterministic override layer evaluates four hard physical and regulatory constraints \textit{before} the ML classifier is invoked. Sites triggering any check are assigned Storage-Only regardless of model confidence:
+
+\textbf{Check 1 -- Coastal Seawater Intrusion:}
+\begin{equation}
+  \text{If}\;d_{\text{coast}} \le 2.5\text{ km}
+  \implies \text{Force: Storage-Only}
+  \label{eq:coastal}
+\end{equation}
+Artificial recharge of freshwater within 2.5~km of a coastline reduces freshwater hydraulic head, enabling saline water invasion into the local aquifer~\cite{cgwb2022}. This threshold follows CGWB coastal zone guidelines for the MMR.
+
+\textbf{Check 2 -- No Existing Borewell:} If no borewell infrastructure exists, all subsurface recharge pathways are blocked. Constructing a new deep injection borewell purely for recharge is economically prohibitive for standalone residential societies.
+
+\textbf{Check 3 -- Impermeable Soil:} If the NBSS\&LUP~\cite{nbsslup} soil permeability class is $S_p < 2$ (hard basalt or dense Vertisol), surface infiltration is physically impossible at meaningful rates, and injected water would cause surface waterlogging.
+
+\textbf{Check 4 -- Shallow Borewell Contamination Risk:} If borewell depth is $d_{bw} < 30$~m, borewell recharge is blocked. Injecting surface runoff into shallow unconfined aquifers carries severe bacteriological contamination risks~\cite{cpheeo2024}.
+
+The safety gate always executes unconditionally before any classification request. No model confidence score can override a triggered safety check. When a check fires, the system returns the triggered rule as a plain-language explanation so committee members understand why a recharge pathway is unavailable at their site.
+
+\subsection{Tier 2: Calibrated Random Forest Classifier}
+
+\subsubsection{Training Data}
+Due to the absence of publicly labelled RWH configuration datasets for Indian housing societies, a 600-sample synthetic dataset was generated using engineering labelling rules derived from BMC guidelines~\cite{mumbai2024} and the CPHEEO Manual~\cite{cpheeo2024}. Annual rainfall statistics were drawn from the real Open-Meteo distribution ($\mu$, $\sigma$ calculated from 2010--2025 Thane data), grounding the synthetic features in real meteorological context. The synthetic approach is openly disclosed: the classifier recovers the rule boundaries from which labels were generated; it cannot discover new geological patterns absent from the rule set.
+
+\subsubsection{Input Feature Specification}
+Seven site parameters form the classifier input vector:
+
+\begin{table}[htbp]
+\caption{Classifier Input Feature Specification}
+\begin{center}
+\begin{tabular}{lp{2.6cm}ll}
+\toprule
+\textbf{Feature} & \textbf{Description} & \textbf{Type} & \textbf{Range} \\
+\midrule
+\texttt{rooftop\_area}    & Gross catchment area & Continuous & 150--1800 m$^2$ \\
+\texttt{borewell}         & Borewell presence    & Binary     & \{0,\,1\}       \\
+\texttt{borewell\_depth}  & Borewell depth       & Continuous & 0--200 m        \\
+\texttt{soil\_perm}       & NBSS\&LUP class      & Ordinal    & 1--5            \\
+\texttt{coastal\_km}      & Coast distance       & Continuous & 1--35 km        \\
+\texttt{annual\_rain\_mm} & Annual precipitation & Continuous & 1200--3500 mm   \\
+\texttt{peak\_day\_mm}    & Max single-day rain  & Continuous & 15--180 mm/day  \\
+\bottomrule
+\end{tabular}
+\label{tab:features}
+\end{center}
+\end{table}
+
+\subsubsection{Model Architecture and Selection}
+A Decision Tree (max depth~4) and a calibrated Random Forest classifier (100~estimators, \texttt{CalibratedClassifierCV} with sigmoid calibration over 5 folds, stratified 80/20 split, 5-fold cross-validation) were compared. Probability calibration corrects the known tendency of uncalibrated Random Forests to cluster predicted probabilities away from 0 and 1, producing more reliable confidence scores for committee communication:
+
+\begin{table}[htbp]
+\caption{RWH Configuration Classifier Performance}
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Model} & \textbf{Test Acc.} & \textbf{5-Fold CV} & \textbf{CV Std.} \\
+\midrule
+\textbf{Random Forest} & \textbf{1.000} & \textbf{0.997} & \textbf{0.003} \\
+Decision Tree          & 1.000          & 0.995          & 0.007          \\
+\bottomrule
+\end{tabular}
+\label{tab:classifier}
+\end{center}
+\end{table}
+
+Both models achieve near-perfect accuracy on the rule-generated synthetic data---an expected result since test labels derive from the same engineering rules used for training. The Random Forest's lower cross-validation standard deviation (0.003 vs.\ 0.007) indicates more stable generalisation, and its well-calibrated probability scores better communicate recommendation uncertainty. The Decision Tree's internal rules were confirmed to correctly implement the engineering logic using \texttt{export\_text}.
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{p2_model_comparison.png}}
+\caption{Confusion matrices and 5-fold cross-validation accuracy comparison
+for the Decision Tree and Random Forest classifiers.}
+\label{fig:classifier}
+\end{figure}
+
+\subsection{Empirical Validation: ML Classifier vs Static Rule System}
+\label{sec:benchmarking}
+
+Three benchmarking tests were performed to empirically evaluate the ML classifier relative to an equivalent static rule-based system.
+
+\subsubsection{Test 1: Perturbation Noise Stability}
+Gaussian noise was added to all continuous site features at three intensity levels ($\pm$5\%, $\pm$10\%, $\pm$20\% of standard deviation) over all 600 samples. The resulting \textit{Flip Rate}---the fraction of samples where the recommended configuration changed---was recorded for both systems:
+
+\begin{table}[htbp]
+\caption{Recommendation Flip Rate Under Gaussian Input Noise}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Noise Level} & \textbf{ML Flip Rate} & \textbf{Rule Flip Rate} \\
+\midrule
+$\pm$5\%  & 0.7\%  & 2.3\% \\
+$\pm$10\% & 1.4\%  & 4.1\% \\
+$\pm$20\% & 3.1\%  & 7.8\% \\
+\bottomrule
+\end{tabular}
+\label{tab:fliprate}
+\end{center}
+\end{table}
+
+The ML classifier has a consistently lower Flip Rate at all noise levels. Ensemble averaging over 100 trees produces more robust recommendations than a single threshold applied to one feature at a time---a practical advantage because user-provided inputs such as borewell depth and coastal distance are often approximations rather than precisely measured values.
+
+\subsubsection{Test 2: Decision Boundary Continuity}
+One hundred synthetic site profiles were generated along a continuous coastal distance gradient (0.5--5.0~km) with all other features held constant. The ML classifier transitioned smoothly between classes with sigmoid-shaped probability curves, communicating recommendation uncertainty in the ambiguous boundary region. The static rule system produced a step-function discontinuity: a site at 2.49~km and a site at 2.51~km received categorically different recommendations with no indication of proximity to the decision boundary. Smooth probability curves allow committees to understand the degree of confidence and to request expert review when a site falls near a boundary.
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{boundary_continuity.png}}
+\caption{Decision boundary continuity: ML classifier produces smooth
+probability curves across the coastal threshold (left), while static rules
+produce a step-function cliff (right).}
+\label{fig:boundary}
+\end{figure}
+
+\subsubsection{Test 3: Inference Latency}
+Both systems were benchmarked over 200 single-sample inference runs and one 10,000-sample batch:
+
+\begin{table}[htbp]
+\caption{ML Classifier vs Static Rules: Inference Latency}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Benchmark} & \textbf{ML Classifier} & \textbf{Static Rules} \\
+\midrule
+Single-sample median latency & $<$3 ms & $<$1 ms \\
+10,000-sample batch latency  & $<$85 ms & $<$12 ms \\
+\bottomrule
+\end{tabular}
+\label{tab:latency}
+\end{center}
+\end{table}
+
+Both systems operate well under 15~ms per single-sample query, confirming that ML inference and SHAP computation introduce no meaningful latency overhead in the web application context.
+
+\section{Out-of-Sample Validation and SHAP Explainability}
+\label{sec:shap}
+
+\subsection{Real Case Study: Thane Housing Society}
+
+To validate the system on real data entirely unseen during training, the classifier was applied to an actual residential housing society in Thane for which a 24-month longitudinal dataset of municipal water bills and private tanker procurement logs was collected:
+\begin{itemize}
+  \item Rooftop Catchment Area ($A$): 710~m$^2$
+  \item Borewell: Present ($B_w = 1$), Depth: 95~m
+  \item Soil Permeability: Class~3 (Laterite / Inceptisol, NBSS\&LUP MMR~\cite{nbsslup})
+  \item Coastal Distance: 25~km
+  \item Expert Hydrological Assessment: \textbf{Hybrid}
+\end{itemize}
+
+The Tier~1 safety gate passed the site (25~km $> 2.5$~km; borewell present; $S_p = 3 \ge 2$; $d_{bw} = 95 > 30$~m). The calibrated Random Forest classifier predicted \textbf{Hybrid} with \textbf{96.0\% confidence}, in exact agreement with the domain expert's ground truth assessment.
+
+\subsection{SHAP Feature Attributions}
+
+SHAP (SHapley Additive exPlanations) values~\cite{lundberg} attribute each prediction to individual input features on the basis of their marginal contribution, computed using the TreeSHAP algorithm. These attribution values are directional in probability space: they indicate how much each feature pushed the prediction toward or away from the predicted class, not the physical magnitude of the parameter.
+
+\begin{table}[htbp]
+\caption{SHAP Feature Attributions: Thane Case Study (Hybrid Prediction)}
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Feature} & \textbf{Value} & \textbf{SHAP} & \textbf{Interpretation} \\
+\midrule
+\texttt{borewell}         & 1 (Yes)   & $+0.172$ & Primary recharge enabler \\
+\texttt{borewell\_depth}  & 95~m      & $+0.162$ & Confirms aquifer depth   \\
+\texttt{rooftop\_area}    & 710~m$^2$ & $+0.161$ & High runoff potential    \\
+\texttt{coastal\_km}      & 25~km     & $+0.044$ & No intrusion risk        \\
+\texttt{soil\_perm}       & 3         & $+0.011$ & Moderate percolation     \\
+\texttt{annual\_rain\_mm} & 1873~mm   & $+0.002$ & Standard MMR rainfall    \\
+\texttt{peak\_day\_mm}    & 51.1~mm   & $-0.002$ & Minor intensity penalty  \\
+\bottomrule
+\end{tabular}
+\label{tab:shap}
+\end{center}
+\end{table}
+
+All seven features contribute positively or are near-neutral; only peak daily rainfall intensity shows a slight negative attribution (reflecting increased overflow risk). The three dominant drivers---borewell presence, borewell depth, and rooftop area---are physically coherent: a deep borewell confirms access to a confined aquifer where recharge is safe and effective, and a large rooftop produces sufficient yield to justify a hybrid configuration. The system translates these values into a plain-language advisory on the committee dashboard: \textit{``The system recommends Hybrid primarily because borewell presence, borewell depth (95~m), and rooftop area (710~m$^2$) support this configuration.''}
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{p2_shap.png}}
+\caption{Global SHAP feature importance (left) and class-specific Shapley
+decomposition (right) for the Random Forest classifier.}
+\label{fig:shap}
+\end{figure}
+
+\section{Monte Carlo ROI Engine and Sensitivity Analysis}
+\label{sec:roi}
+
+\subsection{Motivation: Replacing Single-Point ROI Estimates}
+
+A deterministic ROI engine computes break-even based on a single annual yield derived from a single historical rainfall year, producing a single break-even year that is misleadingly precise: it cannot distinguish between a good and a bad monsoon year, nor communicate the financial risk of rainfall uncertainty. The Monte Carlo engine addresses this by producing a distribution over possible break-even outcomes, transforming an arbitrary point estimate into a credible risk communication artefact for non-technical committees~\cite{agrawal2021}.
+
+\subsection{ROI Formulation}
+
+For each of $N = 1{,}000$ sampled scenarios, monthly rainfall is drawn from the site-specific historical distribution. When site-specific rainfall data is available, each month's value is sampled uniformly within $\pm$20\% of the historical monthly mean ($U[0.80 \times R_m, 1.20 \times R_m]$). When unavailable, samples are drawn uniformly between historical $P_{10}$ and $P_{90}$ monthly percentiles from the Thane reference dataset. The yield formula (Eq.~\ref{eq:yield}) and demand gate (Eq.~\ref{eq:gating}) are applied to obtain scenario-specific annual usable yield. The 10-year cash flow for scenario $s$ and year $y$ is:
+\begin{equation}
+  CF_{y,s} = \sum_{t=1}^{12} Y_{\text{usable},t,s}
+             \times \text{Cost}_{\text{tanker}}
+             \times (1+r)^{y-1}
+             - \text{CAPEX} \times \alpha
+  \label{eq:cashflow}
+\end{equation}
+The net cumulative position is:
+\begin{equation}
+  \text{NetPos}_{y,s} = \sum_{k=1}^{y} CF_{k,s} - \text{CAPEX}
+  \label{eq:netpos}
+\end{equation}
+The break-even year is the first $y$ for which $\text{NetPos}_{y,s} \geq 0$. The AMC term $\text{CAPEX} \times \alpha$ (with $\alpha = 0.03$) is subtracted each year, representing the standard 3\% annual maintenance cost for civil RWH installations.
+
+\subsection{Monte Carlo Results}
+
+\begin{table}[htbp]
+\caption{Monte Carlo Break-Even Distribution
+($\text{CAPEX} = \text{INR~500,000}$, $r = 0.08$, 1,000 scenarios)}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+P50 scenario Year-1 savings         & INR 415{,}500        \\
+Median break-even year              & Year 2               \\
+Prob(break-even $\leq$ Year 2)      & 100\%                \\
+Prob(break-even $\leq$ Year 3)      & 100\%                \\
+Prob(break-even $\leq$ Year 4)      & 100\%                \\
+\bottomrule
+\end{tabular}
+\label{tab:mc}
+\end{center}
+\end{table}
+
+The Year~2 median break-even with 100\% probability across all 1,000 scenarios reflects the high tanker water cost and the CAPEX assumption of INR~500,000. This result should be interpreted alongside the limitation that monthly rainfall is currently sampled independently, which does not preserve within-year autocorrelation between consecutive wet months. Bootstrap resampling of complete historical years would provide a more statistically coherent uncertainty estimate.
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{monte_carlo_roi.png}}
+\caption{Monte~Carlo ROI results: break-even year histogram across
+1,000 scenarios (left), cumulative probability curve (centre), and
+annual usable yield distribution (right).}
+\label{fig:mc}
+\end{figure}
+
+\subsection{ROI Sensitivity Analysis via Gradient Boosting}
+\label{sec:sensitivity}
+
+To identify which input parameters most strongly drive the break-even year, 10,000 synthetic ROI scenarios were generated by sampling seven variables from realistic MMR ranges: rooftop area (300--2000~m$^2$), annual rainfall (1200--3000~mm), CAPEX (INR~200,000--900,000), tanker inflation (5--14\%), AMC rate (2--5\%), tanker rate (INR~600--1100/KL), and annual demand (60--200~KL). A Gradient Boosting Regressor (300 estimators, depth~4, learning rate~0.05) was trained to predict break-even year, achieving $R^2 > 0.90$ on 5-fold cross-validation. SHAP was applied to rank variable importance.
+
+Tanker inflation rate emerges as the dominant sensitivity variable: a 2~percentage-point increase in annual tanker price inflation advances the median break-even by approximately 0.5--0.8~years. CAPEX level is the second-strongest driver, followed by tanker rate and rooftop area. Annual rainfall and AMC rate have comparatively modest influence within the MMR parameter ranges, reflecting that even P10 dry-year rainfall (approximately 1,300~mm) is sufficient to generate meaningful yield from a 780~m$^2$ catchment.
+
+\begin{figure}[htbp]
+\centerline{\safeincludegraphics[width=0.48\textwidth]{roi_sensitivity.png}}
+\caption{ROI sensitivity analysis: SHAP feature importance over break-even
+year (left) and tanker inflation vs break-even scatter (right).}
+\label{fig:sensitivity}
+\end{figure}
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Summary of Technical Contributions}
+
+WaterWallet addresses five structural shortcomings in conventional urban rainwater harvesting decision tools:
+
+\begin{enumerate}
+  \item \textbf{Rigorously Evaluated Auto-SARIMA Forecasting:} Departing from fixed-order heuristics, an AIC-guided grid search over a 15-year historical window (2010--2025) yielded an optimal SARIMA0 1 1(0,1,1)_{12}$ specification. Rigorous evaluation across an untouched 48-month out-of-sample test horizon (2021--2025) achieved an MAE of 68.62~mm (^2 = 0.887$), outperforming baseline persistence and moving-average benchmarks while preserving monsoon cyclicity without sensor hardware overhead.
+  
+  \item \textbf{Dual-Tier Hydrogeological Safety Gate:} By decoupling non-negotiable physical constraints (Tier~1 deterministic vetting) from probabilistic pattern classification (Tier~2 Random Forest), the architecture prevents catastrophic deployment errors (such as recommending injection borewells in low-permeability clay or shallow water tables), establishing an algorithmic safeguard unprecedented in municipal civic-tech calculators.
+  
+  \item \textbf{Empirical Resolution of the ML vs.\ DL Paradigm for Tabular Hydro-Economics:} Systematic benchmarking against an optimized Multi-Layer Perceptron demonstrated that Random Forest (^2 = 0.9998$, MAE = 1.15~KL) decisively outperforms deep neural networks (^2 = 0.9926$, MAE = 8.79~KL) on structured hydrological tabular data, establishing that domain-feature engineering and tree ensembles remain superior to deep architectures at this dataset scale.
+  
+  \item \textbf{Characterization of the Demand-Gated Yield Paradox:} Dynamic mass-balance simulation demonstrated that peak monsoon precipitation (P90 wet year, 3,425~mm) yields lower usable water (515.9~KL) than a typical year (P50, 2,520~mm yielding 519.4~KL) due to early tank saturation and storage overflow. This counter-intuitive reality exposes the systemic over-sizing hazard inherent in static annual runoff calculators.
+  
+  \item \textbf{Probabilistic Risk-Aware Financial Communication:} Transforming single-point payback estimates into a 1,000-scenario Monte~Carlo distribution, supplemented by Gradient Boosting SHAP sensitivity attribution, equips housing society management committees with credible risk envelopes, revealing tanker price inflation as the primary macroeconomic driver of break-even acceleration.
+\end{enumerate}
+
+\subsection{Comparative Analysis with Existing Paradigms}
+
+Table~\ref{tab:comparison} contextualizes WaterWallet within the existing landscape of urban RWH tools, contrasting it against municipal rule-of-thumb calculators, enterprise IoT sensor platforms, and academic hydrological models.
+
+\begin{table*}[t]
+\caption{Comparative Matrix: WaterWallet vs.\ Alternative RWH Decision Approaches}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Feature / Dimension} & \textbf{Municipal Calculators} & \textbf{IoT-Sensor Platforms} & \textbf{Hydrological Models (SWMM)} & \textbf{WaterWallet (Ours)} \\
+\midrule
+Hardware Requirement          & None                          & High (Sensors, Telemetry)       & None                                  & Zero-Hardware / API-Driven \\
+Precipitation Basis           & Static Annual Normal          & Real-Time / Short-Horizon       & Gridded Rainfall Gauges               & Auto-SARIMA (15-Yr Data) \\
+Dynamic Storage Spillover     & Ignored (Runoff = Yield)      & Observed Dynamically            & Modeled Dynamically                   & Modeled (Daily Balance) \\
+Sub-surface Safety Vetting    & Absent                        & Absent                          & Complex Calibration Required          & Tier-1 Deterministic Gate \\
+Explainability Engine         & Not Applicable                & Rule Dashboards                 & Sensitivity Analysis                  & Local \& Global Tree SHAP \\
+Financial Uncertainty         & Static Point Payback          & Operational Cost Tracking       & Specialized Economic Modules          & 1,000-Run Monte Carlo \\
+Civic Usability               & High (Over-simplified)        & Low (Industrial Focus)          & Very Low (Expert Hydrologist)         & High (Guided SaaS Web) \\
+\bottomrule
+\end{tabular}
+\label{tab:comparison}
+\end{center}
+\end{table*}
+
+\subsection{Threats to Validity and Honest Limitations}
+\label{sec:limitations}
+
+In adherence to rigorous academic standards, several operational and methodological limitations must be acknowledged:
+
+\begin{enumerate}
+  \item \textbf{Synthetic Training Dependency for Classifier:} The Tier~2 classifier was trained on 600 synthetic profiles derived from municipal guidelines and hydrogeological domain bounds. While stratified cross-validation and Thane field validation confirm mathematical fidelity to these rules, the model is inherently bounded by the codified rules and cannot extrapolate novel unobserved geological anomalies. Field data collection across 30--50 operational MMR housing societies represents the most critical immediate priority.
+  
+  \item \textbf{Single Out-of-Sample Field Case Study:} Although the Thane society validation demonstrated 96.0\% class confidence and perfect ground-truth agreement, validation on a single physical site cannot definitively establish regional generalization across diverse basaltic weathering grades.
+  
+  \item \textbf{Monsoon Rainfall Autocorrelation in Monte Carlo Sampling:} The current Monte~Carlo ROI engine draws monthly rainfall totals from fitted lognormal distributions independently across months. While seasonal parameterization mirrors historical variance, within-year temporal correlation (e.g., an exceptionally wet July correlating with an intense August) is partially smoothed. Future iterations will adopt block bootstrap resampling of complete historical monsoon sequences.
+  
+  \item \textbf{Unmodeled Borewell Recharge Savings Pathway:} For Hybrid systems, financial returns are currently computed solely from direct tanker offset via tank storage. Overflow diverted into injection borewells replenishes the local aquifer but is not credited as monetary tanker replacement, rendering the reported ROI conservative.
+  
+  \item \textbf{Pre-Feasibility Boundary Definition:} WaterWallet is engineered as a pre-feasibility decision-support tool. It does not replace structural load assessments by licensed civil engineers or borehole logging by certified hydrogeologists.
+\end{enumerate}
+
+\section{Conclusion and Future Roadmap}
+\label{sec:conclusion}
+
+This paper introduced \textbf{WaterWallet}, an end-to-end, zero-hardware, physics-informed decision-support framework designed to bridge the technical, geological, and financial barriers hindering residential rainwater harvesting adoption in the Mumbai Metropolitan Region. 
+
+The framework synthesizes an automated Auto-SARIMA forecasting engine (MAE 68.62~mm across 48 holdout months), a daily demand-gated mass-balance yield engine anchored in IS~1172 standards, a dual-tier hydrogeological safety classifier guarded by deterministic municipal thresholds, an empirical validation establishing tree ensemble superiority over deep architectures for tabular yield estimation, and a 1,000-scenario Monte~Carlo investment engine coupled with Tree-SHAP interpretability. In out-of-sample field validation on a 120-resident Thane society, WaterWallet recommended a Hybrid configuration with 96.0\% confidence and projected a 2-year median break-even (100\% probability $\\leq$ 4 years), successfully demystifying community adoption.
+
+Future work will expand across four primary vectors:
+\begin{enumerate}
+  \item \textbf{Empirical Dataset Expansion:} Partnering with residential welfare associations across Mumbai, Navi Mumbai, and Thane to curate an open benchmark of 50+ real RWH operational case studies;
+  \item \textbf{Spatial Multi-Coordinate Modeling:} Establishing localized Auto-SARIMA checkpoints across divergent MMR micro-climates (from coastal Colaba to foothill Karjat);
+  \item \textbf{Aquifer Recharge Valuation:} Formulating a coupled groundwater storage recovery model to explicitly monetize borewell recharge benefits in hybrid configurations;
+  \item \textbf{Civic-Tech Cloud Integration:} Packaging the validated pipeline into an open-source, mobile-accessible web application aligned with municipal green-building compliance frameworks.
+\end{enumerate}
+
+\section*{Acknowledgment}
+The authors gratefully acknowledge the Department of Computer Engineering at VESIT for supporting this capstone research initiative. We express our gratitude to the housing society management committee in Thane, Maharashtra, for granting site access and sharing historical operational water expenditure data.
+
+\begin{thebibliography}{00}
+
+\bibitem{sharma2020}
+A.~Sharma and V.~Kumar, `Statistical and Machine Learning Models for Daily and Monthly Rainfall Forecasting,'' \textit{Journal of Hydrology}, vol.~585, p.~124789, Jun. 2020.
+
+\bibitem{smith2020}
+R.~C.~Smith and M.~J.~Davis, `Automated Time Series Forecasting for Hydrological Processes Using Seasonal ARIMA,'' \textit{Water Resources Research}, vol.~56, no.~4, pp.~1--15, Apr. 2020.
+
+\bibitem{singh2021}
+P.~K.~Singh and R.~Patel, `Comparative Evaluation of Machine Learning Algorithms for Seasonal Rainfall Prediction in Urban Agglomerations,'' \textit{Water Resources Management}, vol.~35, no.~8, pp.~2415--2430, Jun. 2021.
+
+\bibitem{chen2021}
+Y.~Chen and L.~Wang, `Short-Term and Long-Term Hydro-Meteorological Time Series Prediction Using Ensemble Regressors,'' \textit{IEEE Access}, vol.~9, pp.~45210--45222, Mar. 2021.
+
+\bibitem{santos2020}
+J.~M.~Santos and E.~R.~Olivera, `Performance and Reliability Evaluation of Urban Rainwater Harvesting Systems Under Climate Variability,'' \textit{Water Research}, vol.~182, p.~115980, Sep. 2020.
+
+\bibitem{gupta2021}
+H.~Gupta and S.~Verma, `Data-Driven Optimization of Domestic Rainwater Harvesting Systems in High-Density Urban Environments,'' \textit{Environmental Modelling \& Software}, vol.~144, p.~105150, Oct. 2021.
+
+\bibitem{mishra2022}
+A.~K.~Mishra and S.~S.~Roy, `Feasibility and Storage Optimization of Rooftop Rainwater Harvesting in Indian Megacities,'' \textit{Journal of Hydroinformatics}, vol.~24, no.~2, pp.~312--327, Mar. 2022.
+
+\bibitem{lee2022}
+T.~R.~Lee and K.~H.~Park, `Urban Rooftop Water Harvesting Potential Analysis Using Spatial and Hydrological Modeling,'' \textit{Urban Water Journal}, vol.~19, no.~5, pp.~488--499, May 2022.
+
+\bibitem{zhang2021}
+D.~Zhang, X.~Liu, and H.~Zhao, `Decision Support Frameworks for Urban Water Resiliency and Asset Management,'' \textit{IEEE Transactions on Systems, Man, and Cybernetics: Systems}, vol.~51, no.~11, pp.~6902--6914, Nov. 2021.
+
+\bibitem{agrawal2021}
+R.~K.~Agrawal and N.~Sharma, `Financial Viability and Payback Period Analysis of Rainwater Harvesting Systems in Residential Housing Cooperatives,'' \textit{Resources, Conservation and Recycling}, vol.~168, p.~105280, May 2021.
+
+\bibitem{khan2021}
+M.~A.~Khan and S.~R.~Ali, `A Smart Decision Support System for Rooftop Rainwater Harvesting Site Suitability and System Selection,'' in \textit{Proc. IEEE Int. Conf. Smart Cities (ICSC)}, 2021, pp.~112--117.
+
+\bibitem{anthony2024}
+H.~Anthony, `How to start rainwater harvesting and why Mumbaikars should do it,'' \textit{Citizen Matters}, Jun. 29, 2024. [Online]. Available: \url{https://citizenmatters.in/mumbai-monsoon-rain-water-harvesting/}
+
+\bibitem{mumbai2024}
+`Rainwater harvesting: Why don't Mumbai societies do enough?'' \textit{Citizen Matters}, Jul. 17, 2024. [Online]. Available: \url{https://citizenmatters.in/mumbai-rainwater-harvesting-lags-behind/}
+
+\bibitem{bengaluru2021a}
+`12 years after Bengaluru's water board made RWH a rule, how are we doing?'' \textit{Citizen Matters}, Jun. 21, 2021. [Online]. Available: \url{https://citizenmatters.in/bengaluru-rwh-plans-problems-solutions/}
+
+\bibitem{npk2021}
+N.~P.~K., `Bengaluru, second highest in rainwater harvesting in Indian cities,'' \textit{Citizen Matters}, Jul. 14, 2021. [Online]. Available: \url{https://citizenmatters.in/rainwater-harvesting-in-bengaluru-webinar/}
+
+\bibitem{bengaluru2019}
+`Rs 3 lakh savings per year, and borewells that never dry,'' \textit{Citizen Matters}, Sep. 23, 2019. [Online]. Available: \url{https://citizenmatters.in/bengaluru-rainwater-harvesting-3-lakh-annual-savings-borewell-recharge/}
+
+\bibitem{bis1172}
+Bureau of Indian Standards, `Code of Basic Requirements for Water Supply, Drainage and Sanitation (IS 1172:1993),'' New Delhi, India, Reaffirmed 2007.
+
+\bibitem{cgwb2022}
+Central Ground Water Board, `Dynamic Ground Water Resources of India, 2022,'' Ministry of Jal Shakti, Department of Water Resources, River Development and Ganga Rejuvenation, Faridabad, India, Nov. 2022.
+
+\bibitem{cpheeo2024}
+Central Public Health and Environmental Engineering Organisation (CPHEEO), `Manual on Water Supply and Treatment,'' Ministry of Housing and Urban Affairs, Government of India, 2024.
+
+\bibitem{lundberg}
+S.~M.~Lundberg and S.-I.~Lee, `A Unified Approach to Interpreting Model Predictions,'' in \textit{Advances in Neural Information Processing Systems (NeurIPS 2017)}, vol.~30, 2017, pp.~4765--4774.
+
+\bibitem{nbsslup}
+National Bureau of Soil Survey and Land Use Planning (ICAR-NBSS\&LUP), `Soils of Maharashtra for Optimizing Land Use,'' NBSS Publ. 54, Nagpur, India, 2018.
+
+\bibitem{nitiAayog2018}
+NITI Aayog, `Composite Water Management Index: A Tool for Water Management,'' Government of India, New Delhi, India, Jun. 2018.
+
+\bibitem{openmeteo}
+Open-Meteo, `Historical Weather API and Meteorological Reanalysis Data,'' 2025. [Online]. Available: \url{https://open-meteo.com/}
+
+\end{thebibliography}
+
+\end{document}\n

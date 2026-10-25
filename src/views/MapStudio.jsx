@@ -145,9 +145,7 @@ const RainfallDemandChart = memo(function RainfallDemandChart({
 
         {isForecast && forecastData?.model_order && (
           <span className="text-[10px] font-mono text-sky-800 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-md">
-            {typeof forecastData.model_order === 'object' && forecastData.model_order.order
-              ? `SARIMA(${forecastData.model_order.order.join(',')})(${forecastData.model_order.seasonal_order?.slice(0, 3)?.join(',')})₁₂ · 95% CI`
-              : `SARIMA ${forecastData.model_order} · 95% CI`}
+            SARIMA({forecastData.model_order.order?.join(',')})({forecastData.model_order.seasonal_order?.slice(0, 3)?.join(',')})₁₂ · 95% CI
           </span>
         )}
       </div>
@@ -327,25 +325,26 @@ export default function MapStudio() {
   }, [roofPolygonPoints]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addPoint = useCallback((latlng) => {
-    setPoints((prev) => [...prev, latlng]);
-  }, []);
+    setPoints((prev) => {
+      const next = [...prev, latlng];
+      setRoofPolygonPoints(next);
+      return next;
+    });
+  }, [setRoofPolygonPoints]);
 
-  const clearPoints = useCallback(() => {
+  const clearPoints = () => {
     setPoints([]);
     setRoofPolygonPoints([]);
     setPolygonGeoJSON(null);
-  }, [setRoofPolygonPoints, setPolygonGeoJSON]);
+  };
 
-  const undoPoint = useCallback(() => {
-    setPoints((prev) => prev.slice(0, -1));
-  }, []);
-
-  // Sync points safely to context outside render & state reducer
-  useEffect(() => {
-    if (points !== roofPolygonPoints) {
-      setRoofPolygonPoints(points);
-    }
-  }, [points, roofPolygonPoints, setRoofPolygonPoints]);
+  const undoPoint = () => {
+    setPoints((prev) => {
+      const next = prev.slice(0, -1);
+      setRoofPolygonPoints(next);
+      return next;
+    });
+  };
 
   // ─── Centroid computation via Turf.js ────────────────────────────────────
   const centroid = useMemo(() => {
@@ -417,14 +416,20 @@ export default function MapStudio() {
     const requestId = ++rainfallRequestId.current;
 
     if (!centroid || tracedArea <= 0) {
+      // Resetting request state when the selected catchment is cleared is
+      // intentional; these values are derived from an external API request.
       setBackendYield(0);
       setMlYieldSource(null);
       setMlYieldDeviation(null);
       setForecastAnnualRainfall(null);
       setForecastData(null);
+      setMlAnnualYield(0);
+      setMlMonthlyYield(null);
       setHistoricalPeriod(null);
       setAnnualRainfall(null);
       setMonthlyMm(MMR_DEFAULT_MONTHLY_RAINFALL);
+      setGrossRoofArea(0);
+      setRainfallSource('seed');
       setWeatherLoading(false);
       setWeatherError(false);
       return;
@@ -548,13 +553,11 @@ export default function MapStudio() {
 
   // ─── Step 3: Sync to global context ──────────────────────────────────────
   useEffect(() => {
-    if (tracedArea > 0) {
-      setEstimatedCapex(estimatedCapex);
-      setGrossRoofArea(tracedArea);
-      setAnnualYield(backendYield || maxYield);
-      if (monthlyMm && monthlyMm.some((v) => v > 0)) {
-        setMonthlyRainfall(monthlyMm);
-      }
+    setEstimatedCapex(estimatedCapex);
+    setGrossRoofArea(tracedArea);
+    setAnnualYield(tracedArea > 0 ? backendYield || maxYield : 0);
+    if (monthlyMm && monthlyMm.some(v => v > 0)) {
+      setMonthlyRainfall(monthlyMm);
     }
   }, [estimatedCapex, backendYield, maxYield, monthlyMm, tracedArea, setEstimatedCapex, setGrossRoofArea, setAnnualYield, setMonthlyRainfall]);
 

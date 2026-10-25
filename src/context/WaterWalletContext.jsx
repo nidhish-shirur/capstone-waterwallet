@@ -108,7 +108,7 @@ export function WaterWalletProvider({ children }) {
     return SEASONAL_WEIGHTS.map(w => annualDemand * (w / sumWeights));
   }, [annualDemand]);
 
-  const value = useMemo(() => ({
+  const value = {
     // Phase 1
     societyId,        setSocietyId,
     societyName,      setSocietyName,
@@ -147,15 +147,7 @@ export function WaterWalletProvider({ children }) {
     borewellDepth,    setBorewellDepth,
     soilPerm,         setSoilPerm,
     coastalKm,        setCoastalKm,
-  }), [
-    societyId, societyName, flats, occupants, pincode, roofSurfaceType,
-    totalTankerSpend, totalMunicipal, totalTankerVolume, billingMonths,
-    potableDemand, nonPotableDemand,
-    estimatedCapex, annualYield, annualDemand, mlAnnualYield, mlMonthlyYield,
-    monthlyDemand, monthlyRainfall, grossRoofArea, capexRatePerSqm,
-    siteLatitude, siteLongitude, rainfallSource, roofPolygonPoints, polygonGeoJSON,
-    tankCapacityLitres, borewell, borewellDepth, soilPerm, coastalKm
-  ]);
+  };
 
   return (
     <WaterWalletContext.Provider value={value}>
