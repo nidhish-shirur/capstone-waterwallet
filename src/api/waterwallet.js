@@ -66,6 +66,17 @@ export const fetchSocietyBaseline = (payload) =>
 export const fetchCatchmentData = (payload) =>
   api.post("/api/catchment/calculate", payload).then((r) => r.data);
 
+/**
+ * @returns {Promise<{
+ *   annual_rainfall_mm: number,
+ *   monthly_rainfall_mm: number[],
+ *   forecast_start_month: string,
+ *   source: string,
+ *   history_source: string,
+ *   fallback_used: boolean,
+ *   confidence_intervals: Array<{ lower_mm: number, upper_mm: number }>
+ * }>}
+ */
 export const fetchRainfallForecast = (payload) =>
   api.post("/api/catchment/forecast", payload).then((r) => r.data);
 
@@ -81,7 +92,7 @@ export const getMLYield = (payload) =>
 // ---------------------------------------------------------------------------
 
 /**
- * @param {{ daily_demand_lpd, annual_yield_litres, tank_capacity_litres?, water_tariff_per_kl?, installation_cost?, years? }} payload
+ * @param {{ daily_demand_lpd, annual_yield_litres, tank_capacity_litres?, water_tariff_per_kl?, installation_cost?, annual_opex_inr?, years? }} payload
  * @returns {Promise<{ payback_years, ten_year_savings, yearly_breakdown }>}
  */
 export const simulateROI = (payload) =>
@@ -89,8 +100,9 @@ export const simulateROI = (payload) =>
 
 /**
  * Runs 1,000-scenario Monte Carlo ROI simulation.
- * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, monthly_rainfall_mm?: number[], tank_capacity_litres?: number, rainfall_reduction_percent?: number, tanker_rate_per_kl?: number, annual_tanker_volume_litres?: number, water_tariff_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
- * @returns {Promise<{ median_breakeven_year: number, prob_breakeven_by_year: object, percentiles: object, n_scenarios: number, never_break_even_pct: number, scenarios_used: string, is_site_specific: boolean }>}
+ * @param {{ rooftop_area_m2: number, monthly_demand_kl: number, capex_inr: number, annual_opex_inr?: number, monthly_rainfall_mm?: number[], tank_capacity_litres?: number, rainfall_reduction_percent?: number, tanker_rate_per_kl?: number, annual_tanker_volume_litres?: number, water_tariff_per_kl?: number, inflation_rate?: number, n_scenarios?: number }} payload
+ * @returns {Promise<{ median_breakeven_year: number|null, mean_breakeven_year: number|null, prob_breakeven_by_year: object, percentiles: object, n_scenarios: number, never_break_even_pct: number, scenarios_used: string, is_site_specific: boolean }>}
+ * The median is the full-sample P50; 11 represents no break-even within the 10-year horizon.
  */
 export const runMonteCarlo = (payload) =>
   api.post("/api/roi/monte-carlo", payload).then((r) => r.data);
@@ -101,6 +113,21 @@ export const runMonteCarlo = (payload) =>
  */
 export const sizeTank = (payload) =>
   api.post("/api/roi/tank-sizer", payload).then((r) => r.data);
+
+/**
+ * Calculates itemized CAPEX/OPEX from configurable planning assumptions.
+ * @param {object} payload
+ */
+export const estimateProjectCost = (payload) =>
+  api.post("/api/roi/cost-estimate", payload).then((r) => r.data);
+
+/**
+ * Runs the backend daily water balance and financial comparison for three
+ * configurations. Recharge volume is not treated as tanker savings.
+ * @param {object} payload
+ */
+export const compareConfigurations = (payload) =>
+  api.post("/api/roi/configuration-comparison", payload).then((r) => r.data);
 
 // ---------------------------------------------------------------------------
 // ML — Dual-tier recommendation & SHAP explanations
@@ -158,6 +185,17 @@ export const getSocietyFromDatabase = (id) =>
  */
 export const fetchHistoricalBilling = (id) =>
   api.get(`/api/societies/${id}/billing`).then((r) => r.data);
+
+/**
+ * Calculates a monthly water audit from persisted, explicitly measured supplies.
+ * Missing volume inputs remain unavailable rather than being treated as zero.
+ * @param {number} id
+ * @param {number} [year]
+ */
+export const getSocietyWaterAudit = (id, year) =>
+  api.get(`/api/societies/${id}/water-audit`, {
+    params: year == null ? undefined : { year },
+  }).then((r) => r.data);
 
 /**
  * Updates an existing society.

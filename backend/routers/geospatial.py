@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from datetime import datetime, timezone
 from models.schemas import (
     CatchmentRequest,
     CatchmentResponse,
@@ -78,6 +79,7 @@ async def catchment_forecast(payload: RainfallForecastRequest) -> RainfallForeca
         monthly_rainfall_mm=monthly_rainfall,
         annual_yield_litres=round(sum(monthly_yield), 2),
         monthly_yield_litres=[round(value, 2) for value in monthly_yield],
+        forecast_start_month=datetime.now(timezone.utc).strftime("%Y-%m"),
         source="auto_sarima",
         history_source=history_source,
         fallback_used=history_source != "open_meteo_archive",

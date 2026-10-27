@@ -21,7 +21,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Constants (match the notebook)
 # ---------------------------------------------------------------------------
-TANKER_COST_PER_KL = 800.0       # INR per KL (tanker water)
+TANKER_COST_PER_KL = 175.0       # INR per KL (midpoint of the local ₹150–200/KL range)
 INFLATION_RATE     = 0.08        # 8% annual tanker price inflation
 AMC_RATE           = 0.03        # 3% annual maintenance contract on capex
 ROI_YEARS          = 10
@@ -67,6 +67,7 @@ def run_monte_carlo(
     percentile_csv_path: Optional[str] = None,
     usability_factor: float = 0.80,
     runoff_coeff: float = 0.90,
+    annual_opex_inr: Optional[float] = None,
 ) -> dict:
     """
     Run the Monte Carlo ROI simulation.
@@ -91,7 +92,7 @@ def run_monte_carlo(
 
     Returns:
         {
-          "median_breakeven_year": int,
+          "median_breakeven_year": float,  # P50 across all scenarios; 11 means >10 years
           "mean_breakeven_year": float,
           "prob_breakeven_by_year": {"1": 0.02, "2": 0.45, ...},  # years 1-10
           "percentiles": {"p10": int, "p50": int, "p90": int},
@@ -173,7 +174,9 @@ def run_monte_carlo(
         annual_usable_kl = annual_usable_litres / 1000.0
 
         # ── 10-year ROI loop ───────────────────────────────────────────────
-        annual_opex = capex_inr * AMC_RATE
+        annual_opex = (
+            annual_opex_inr if annual_opex_inr is not None else capex_inr * AMC_RATE
+        )
         annual_demand_litres = monthly_demand_kl * 1000 * 12
         offset_tanker_kl = min(annual_usable_kl, annual_tanker_volume_litres / 1000.0)
         offset_municipal_kl = min(
@@ -210,7 +213,9 @@ def run_monte_carlo(
     }
 
     valid_years = breakeven_arr[valid_mask]
-    median_be   = round(float(np.median(valid_years)), 2) if valid_years.size > 0 else None
+    # Keep the median consistent with the full-sample P50. Non-break-even
+    # scenarios remain right-censored at year 11 instead of being discarded.
+    median_be   = round(float(np.median(breakeven_arr)), 2) if breakeven_arr.size > 0 else None
 
     return {
         "median_breakeven_year":  median_be,

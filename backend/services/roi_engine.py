@@ -13,6 +13,7 @@ def simulate_roi(
     annual_tanker_spend: float = 200000.0,
     annual_tanker_volume_litres: float = 1333333.3,
     annual_municipal_spend: float = 46000.0,
+    annual_opex_inr: Optional[float] = None,
 ) -> ROIResponse:
     """
     Simulate a multi-year ROI for a rainwater harvesting system.
@@ -53,7 +54,9 @@ def simulate_roi(
         if annual_tanker_volume_litres > 0
         else 150.0
     )
-    annual_maintenance_cost = installation_cost * 0.03
+    annual_maintenance_cost = (
+        annual_opex_inr if annual_opex_inr is not None else installation_cost * 0.03
+    )
 
     # Guard: zero tariff => zero annual_savings
     if water_tariff_per_kl <= 0:

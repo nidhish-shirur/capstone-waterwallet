@@ -46,7 +46,7 @@ Because urban drainage networks route over 80% of urban runoff directly into dra
 ### The Tanker Dependency & Economic Bleed
 A typical residential cooperative housing society (e.g., 50 flats with 200 occupants) in Thane or suburban Mumbai spends:
 - **₹2,00,000 to ₹5,00,000 annually** on private water tankers.
-- Tanker water is priced at an extortionate **₹800 to ₹1,600 per 10,000-litre tanker** (₹80 to ₹160 per kilolitre), compared to subsidized municipal tariffs of ₹10 to ₹15 per kilolitre.
+- Local tanker billing is typically **₹150–₹200 per kilolitre** (₹1,500–₹2,000 per 10,000-litre tanker); use society invoices to set the model's actual rate. The default model assumption is the range midpoint, ₹175/KL.
 - Compounding private tanker inflation (historically 8% to 12% annually) drains society reserves by **₹30,00,000 to ₹50,00,000 over a 10-year horizon** without building any lasting infrastructure.
 
 ### The Decisional Barrier
@@ -237,14 +237,14 @@ sequenceDiagram
     User->>RD: Navigate to ROI Dashboard
     RD->>API: POST /api/ml/recommend {area: 960, borewell: 1, depth: 95, soil_perm: 3, coastal: 25}
     API->>ML: Run Tier 1 Safety Gate (Passed) -> Calibrated RF Classifier
-    ML-->>API: Config: "Hybrid" (96.0% conf), SHAP attribution values
+    ML-->>API: Config: "Hybrid" (confidence is model-input dependent), SHAP attribution values
     API-->>RD: Recommendation + Plain-English explanation
 
     RD->>API: POST /api/roi/tank-sizer {area: 1200, daily_demand: 13,000 L non-potable}
     API-->>RD: Selected candidate: 50,000 L (84.2% reliability, ₹2.07L capex)
 
     RD->>API: POST /api/roi/monte-carlo {1,000 iterations from historical P10-P90}
-    API-->>RD: Median break-even: Year 2, P(Break-even ≤ Yr 3): 72%, P(≤ Yr 4): 91%
+    API-->>RD: Median break-even: 5.22 years at ₹175/KL in the documented reference case
 
     opt Grounded AI Advisory
         RD->>API: POST /api/advisory/water {validated society facts}
@@ -457,7 +457,7 @@ WaterWallet guides the user through an intuitive, connected three-phase wizard. 
 - **Centroid Calculation:** `turf.centroid()` extracts latitude and longitude of the building centre.
 - **Live Historical Rainfall Fetch:** Calls `POST /api/catchment/calculate`. The backend queries Open-Meteo for 15 complete calendar years (2010–2024) of daily precipitation at that exact GPS coordinate, groups them by year and month, and returns the 12-month historical averages and annual rainfall.
 - **Dynamic Auto-SARIMA Forecasting:** Calls `POST /api/catchment/forecast`. The backend runs `pmdarima.auto_arima` on the 180-month historical sequence to select the best seasonal order via AIC and forecasts the next 12 months with 95% confidence intervals.
-- **Machine Learning Yield Prediction:** Calls `POST /api/ml/yield`. Passes usable rooftop area and monthly rainfall into the Random Forest Regressor (`waterwallet_yield_model.pkl`). The UI compares the ML yield against the deterministic physics equation and displays the deviation percentage.
+- **Yield Estimate:** Calls `POST /api/ml/yield`. The FastAPI backend uses the Random Forest Regressor (`waterwallet_yield_model.pkl`); the separate Express implementation returns a hand-coded heuristic marked `express_heuristic_yield`. The UI compares the configured API estimate against the deterministic physics equation.
 - **Monsoon Dependency Score:** Computes the percentage of rainfall occurring in June through September (JJAS). If $\ge 80\%$, an advisory warning highlights that heavy storage or recharge capacity is required to avoid spillover.
 
 #### Expected Outputs
@@ -479,21 +479,21 @@ WaterWallet guides the user through an intuitive, connected three-phase wizard. 
 +-----------------------------------------------------------------------------------+
 |  [ KPI Summary Cards ]                                                            |
 |  10-Yr Tanker Bleed      RWH Project Budget     Payback Timeline   Self-Sufficiency|
-|  ₹29.8L - ₹41.2L         ₹5,76,000 (Capex)      Year 2 (P50 typical)  130% (High) |
+|  ₹29.8L - ₹41.2L         ₹5,76,000 (Capex)      Site-specific payback  130% (High) |
 |                                                                                   |
 |  [ Dual-Tier AI Recommendation Card ]                                             |
 |  Recommended System: HYBRID (Storage Tank + Borewell Recharge)                    |
-|  Confidence: 96.0% (Tier 2 Random Forest Classifier)                              |
+|  Confidence is model-input dependent (Tier 2 calibrated Random Forest)           |
 |  Why: Borewell presence, borewell depth (95 m), and roof area (960 m²) support    |
 |       this configuration. (SHAP: borewell +0.172, depth +0.162, area +0.161)      |
 |                                                                                   |
 |  [ 10-Year Cumulative Cash Flow Comparison Chart ]                                |
 |  -- Red line: Do-Nothing path under 8% inflation (costs escalate to ₹41.2 Lakhs)  |
 |  -- Green area: Cost with RWH (Capex upfront + 3% AMC; flattens out)              |
-|  -- Intersection point marks Break-Even Year (Year 2)                             |
+|  -- Intersection point is calculated from current tanker bills and project costs |
 |                                                                                   |
 |  [ 1,000-Scenario Monte Carlo Break-Even Distribution ]                           |
-|  Bar Chart: Year 1: 2% | Year 2: 45% | Year 3: 72% | Year 4: 91% | Year 5: 98%    |
+|  Reference case at ₹175/KL: 25.1% by Year 5, 100% by Year 6                     |
 |  Risk of never breaking even within 10 years: 0.0%                                |
 |                                                                                   |
 |  [ Daily Historical Tank Sizer ]                                                  |
@@ -563,10 +563,10 @@ To illustrate how all modules connect, consider the validated reference case stu
 | | Harvestable Yield | Physics formula + ML | Maximum yield = **1.62 ML/year** (130% self-sufficiency) |
 | | Site Hydrogeology | Borewell present, 95 m depth | Permeability: Class 3 (Loam); Coastal dist: 25 km |
 | **Phase 3: ROI Dashboard** | Tier 1 Safety Gate | Coastal 25 km, depth 95 m | **PASSED** (all 4 safety constraints satisfied) |
-| | Tier 2 RF Classifier | 7 features evaluated | **HYBRID** recommended with **96.0% confidence** |
-| | SHAP Attribution | Top drivers | Borewell (+0.172), Depth (+0.162), Roof Area (+0.161) |
-| | Multi-Scenario Payback | Current 8% inflation | **Break-Even: Year 2** (Net benefit Year 10: ₹24.5 Lakhs) |
-| | Monte Carlo Simulation | 1,000 stochastic runs | Median break-even: Year 2; $P(\le \text{Yr 3}) = 72\%$; $P(\le \text{Yr 4}) = 91\%$ |
+| | Tier 2 RF Classifier | 7 features evaluated | **HYBRID** recommended; confidence depends on model inputs |
+| | SHAP Attribution | Top drivers | Recomputed from the trained production artifact |
+| | Multi-Scenario Payback | Current 8% inflation | Calculated from submitted tanker bills, volume, yield, and capex |
+| | Monte Carlo Simulation | 1,000 stochastic runs | Reference case at ₹175/KL: median break-even 5.22 years; $P(\le \text{Yr 5}) = 25.1\%$; $P(\le \text{Yr 6}) = 100\%$ |
 | | Daily Tank Sizer | Non-potable demand (65 LPCD) | Selected **50,000 L tank** (84.2% reliability; ₹2.07L cost) |
 | | Groq AI Advisory | Grounded summary | Highlights strong viability, advising borewell injection overflow |
 | | Report Generation | Print-to-PDF | Comprehensive 2-page executive committee report produced |
@@ -701,7 +701,7 @@ WaterWallet employs machine learning where empirical complexity, non-linear rela
 The core decision problem is identifying whether a site should install **Storage-Only**, **Borewell-Recharge**, or a **Hybrid** system.
 
 ```
-Site Inputs: rooftop_area, borewell, depth, soil_perm, coastal_km, rain_mm, peak_day
+Site Inputs: rooftop_area, borewell, depth, soil_perm, coastal_km, annual_rain_mm, peak_day_mm
                                       │
                                       ▼
                ┌──────────────────────────────────────────────┐
@@ -736,11 +736,11 @@ No ML model probability can override fundamental physical, geological, and regul
 
 #### Tier 2: Calibrated Random Forest Classifier ([`services/ml_engine.py`](file:///d:/VESIT/Capstone/backend/services/ml_engine.py))
 When all Tier 1 checks pass, the payload is evaluated by an ensemble classifier:
-- **Model Type:** `CalibratedClassifierCV(estimator=RandomForestClassifier(n_estimators=100, random_state=42), method='sigmoid', cv=5)`
+- **Model Type:** `CalibratedClassifierCV(estimator=RandomForestClassifier(n_estimators=200, random_state=42), method='sigmoid', cv=5)`
 - **Input Features (7):** `rooftop_area`, `borewell`, `borewell_depth`, `soil_perm`, `coastal_km`, `annual_rain_mm`, `peak_day_mm`.
 - **Target Classes (3):** `Storage-Only`, `Borewell-Recharge`, `Hybrid`.
 - **Training Dataset:** 600 synthetic site profiles generated from BMC, CGWB, and CPHEEO engineering guidelines with rainfall distributions drawn from 15 years of Open-Meteo observations.
-- **Why Probability Calibration:** Uncalibrated Random Forests exhibit biased probability distributions clustered away from 0 and 1. `CalibratedClassifierCV` applies Platt scaling (sigmoid calibration) across 5 folds, producing statistically sound posterior probabilities.
+- **Why Probability Calibration:** `CalibratedClassifierCV` applies sigmoid calibration using five folds to adjust probability estimates. The calibration reflects the synthetic, rule-labelled training distribution and does not establish calibrated confidence on real field sites.
 - **Performance:** 100% test accuracy, 100% balanced accuracy, Macro F1 = 1.00 on the holdout partition.
 
 #### TreeSHAP Explainability
@@ -759,7 +759,7 @@ $$\phi_i = \sum_{S \subseteq F \setminus \{i\}} \frac{|S|!(|F| - |S| - 1)!}{|F|!
 - **Parameter Selection:** Automatic stepwise search using `pmdarima.auto_arima` minimizing the Akaike Information Criterion (AIC):
   $$\text{AIC} = 2k - 2\ln(\hat{L})$$
   *(Constrained to $p \le 3, q \le 3, P \le 2, Q \le 2, \text{max\_order} \le 8$).*
-- **Validation Metric:** Holdout MAE = **68.62 mm** across 48 holdout months (2022–2025), outperforming the naive same-month baseline (72.75 mm) and recursive Random Forest (136.46 mm).
+- **Notebook benchmark (not a live-API evaluation):** 48-month holdout (2022–2025); Auto-SARIMA MAE/RMSE/R² = **63.76 mm / 108.66 mm / 0.823**. Same-month baseline = 73.50 / 127.70 / 0.756; recursive RF = 120.26 / 180.01 / 0.514.
 - **Graceful Fallback:** If `pmdarima` is absent or the series fails to converge, the system falls back seamlessly to the 15-year historical monthly average without disrupting the user.
 
 ---
@@ -817,7 +817,7 @@ $$\phi_i = \sum_{S \subseteq F \setminus \{i\}} \frac{|S|!(|F| - |S| - 1)!}{|F|!
 - **Notebook Implementation:** Cells 10–11 of [`WaterWallet_ml_updated.ipynb`](file:///d:/VESIT/Capstone/WaterWallet_ml_updated.ipynb)
 - **Methodology:** 
   1. Generated 10,000 synthetic ROI scenarios sampling financial variables (tanker inflation 5%–14%, Capex ₹2L–₹9L, rainfall 1,200 mm–3,000 mm, demand 500 kL–2,500 kL).
-  2. Trained a `GradientBoostingRegressor` to predict break-even year from scenario parameters ($R^2 > 0.90$ on 5-fold CV).
+  2. Trained a research-only `GradientBoostingRegressor` to predict break-even year from scenario parameters ($R^2 > 0.90$ on 5-fold CV); this is not part of the production API.
   3. Computed TreeSHAP feature importance ranking across the 10,000 scenarios.
 - **Finding:** **Tanker price inflation ($\gamma$) is the single most dominant driver of payback timing**, outranking Capex variance and rainfall variance. A 2% increase in annual tanker inflation accelerates median break-even by 0.7 to 0.9 years.
 
@@ -833,11 +833,9 @@ $$\phi_i = \sum_{S \subseteq F \setminus \{i\}} \frac{|S|!(|F| - |S| - 1)!}{|F|!
   - `Dense(16, activation='relu')`
   - Output Layer: `Dense(1, activation='linear')` (Predicted yield in kL)
   - Optimizer: Adam (`lr=0.001`), Loss: MSE, Early Stopping (`patience=20`, `restore_best_weights=True`).
-- **Dataset:** 1,080 samples (10 rooftop variations $\times$ 180 months). Same temporal split (2010–2021 train, 2022–2024 test).
-- **Comparative Results:**
-  - **Random Forest Regressor:** Lower MAE (4.897 kL), Higher $R^2$ (0.9865).
-  - **MLP Neural Network:** Higher MAE, Lower $R^2$ on the holdout test set.
-- **Academic Discussion:** On tabular, small-scale datasets ($\sim 10^3$ rows), decision-tree ensemble methods consistently outperform deep neural networks. Neural networks require vast sample densities to learn axis-aligned decision boundaries and feature interactions that Random Forests isolate naturally through bagging. Documenting this negative result validates proper scientific methodology rather than forcing deep learning where classical ML is superior.
+- **Dataset:** The production-aligned RF dataset has 1,800 rows (10 rooftop sizes × 180 months, 2010–2024), with 1,440 training rows (2010–2021) and 360 test rows (2022–2024).
+- **Production metrics:** RF MAE = 4.8973 kL and $R^2$ = 0.9865, from `model_metadata.json`.
+- **Research-only MLP:** The notebook retains an MLP comparison, but it is not used by the API. The old comparison used different features and a different test window; its outputs have been cleared and must be rerun before reporting comparative metrics.
 
 ---
 
@@ -851,10 +849,10 @@ All model metrics below represent actual values verified from [`backend/ml_model
 | **Label Encoder** | [`waterwallet_label_encoder.pkl`](file:///d:/VESIT/Capstone/backend/ml_models/waterwallet_label_encoder.pkl) | `LabelEncoder` | Class index to string mapping | Maps classes 0, 1, 2 to RWH system names | **Active in API** |
 | **Monthly Yield Regressor** | [`waterwallet_yield_model.pkl`](file:///d:/VESIT/Capstone/backend/ml_models/waterwallet_yield_model.pkl) | `RandomForestRegressor` | Monthly harvestable yield (kL) | **MAE: 4.8973 kL**, **$R^2$: 0.9865** | **Active in API** |
 | **Rainfall Percentiles Table** | [`thane_rain_percentiles.csv`](file:///d:/VESIT/Capstone/backend/ml_models/thane_rain_percentiles.csv) | Historical Quantiles (15 yrs) | Monthly $P_{10}, P_{50}, P_{90}$ distributions | 12 months $\times$ 3 percentile columns | **Active in API** |
-| **Rainfall Time-Series Model** | Dynamic in [`services/rainfall_forecast.py`](file:///d:/VESIT/Capstone/backend/services/rainfall_forecast.py) | `auto_arima` (Seasonal SARIMA) | 12-month forward precipitation forecast | **Holdout MAE: 68.62 mm** | **Active in API** |
+| **Rainfall Time-Series Model** | Dynamic in [`services/rainfall_forecast.py`](file:///d:/VESIT/Capstone/backend/services/rainfall_forecast.py) | `auto_arima` (Seasonal SARIMA) | 12-month forward precipitation forecast | **Notebook holdout MAE: 63.76 mm** (not a live-API validation) | **Active in API** |
 | **Explainability Explainer** | Dynamic in [`services/ml_engine.py`](file:///d:/VESIT/Capstone/backend/services/ml_engine.py) | `shap.TreeExplainer` | Feature marginal attribution | Attributions match physical domain rules | **Active in API** |
-| **Deep Learning MLP** | Evaluated in Notebook Cell 20 | Multi-Layer Perceptron (Keras) | Academic DL comparison | Underperformed RF; documented as academic finding | **Notebook Evaluation** |
-| **ROI Sensitivity Regressor** | Evaluated in Notebook Cell 11 | `GradientBoostingRegressor` + SHAP | Global sensitivity ranking on 10k runs | Confirms tanker inflation as top driver ($R^2 > 0.90$) | **Notebook Evaluation** |
+| **Deep Learning MLP** | Evaluated in notebook | Multi-Layer Perceptron (Keras) | Research-only yield comparison | Outputs cleared pending rerun with aligned features | **Not used in API** |
+| **ROI Sensitivity Regressor** | Notebook-only analysis | `GradientBoostingRegressor` + SHAP | Global sensitivity ranking on synthetic scenarios | Research experiment; not a production service | **Not used in API** |
 
 ---
 
@@ -961,7 +959,7 @@ Runs 1,000 stochastic simulations sampling monthly precipitation from historical
   "capex_inr": 576000.0,
   "tank_capacity_litres": 50000.0,
   "rainfall_reduction_percent": 0.0,
-  "tanker_rate_per_kl": 800.0,
+  "tanker_rate_per_kl": 175.0,
   "annual_tanker_volume_litres": 700000.0,
   "water_tariff_per_kl": 15.0,
   "inflation_rate": 0.08,
@@ -973,14 +971,14 @@ Runs 1,000 stochastic simulations sampling monthly precipitation from historical
 **Response:**
 ```json
 {
-  "median_breakeven_year": 2,
-  "mean_breakeven_year": 2.24,
+  "median_breakeven_year": 4.2,
+  "mean_breakeven_year": 4.2,
   "prob_breakeven_by_year": {
-    "1": 0.02,
-    "2": 0.45,
-    "3": 0.72,
-    "4": 0.91,
-    "5": 0.98,
+    "1": 0.0,
+    "2": 0.0,
+    "3": 0.0,
+    "4": 0.0,
+    "5": 1.0,
     "6": 1.0,
     "7": 1.0,
     "8": 1.0,
@@ -988,9 +986,9 @@ Runs 1,000 stochastic simulations sampling monthly precipitation from historical
     "10": 1.0
   },
   "percentiles": {
-    "p10": 2,
-    "p50": 2,
-    "p90": 3
+    "p10": 4.15,
+    "p50": 4.2,
+    "p90": 4.25
   },
   "n_scenarios": 1000,
   "never_break_even_pct": 0.0,
@@ -1013,7 +1011,7 @@ Simulates daily water balance across historical daily records for candidate capa
   "roof_surface_type": "concrete",
   "daily_demand_litres": 13000.0,
   "candidate_capacities_litres": [0, 10000, 20000, 30000, 50000, 75000, 100000],
-  "tanker_rate_per_litre": 0.80,
+  "tanker_rate_per_litre": 0.175,
   "tank_cost_per_litre": 4.0,
   "fixed_system_cost": 7200.0,
   "first_flush_fraction": 0.05,
@@ -1033,8 +1031,8 @@ Simulates daily water balance across historical daily records for candidate capa
     "unmet_demand_litres": 3323200.0,
     "reliability_percent": 84.2,
     "estimated_capex_inr": 207200.0,
-    "annual_savings_inr": 1137440.0,
-    "payback_years": 0.18
+    "annual_savings_inr": 248815.0,
+    "payback_years": 0.83
   },
   "reliability_target_met": true,
   "selection_reason": "Smallest tested tank meeting the 80% average reliability target.",
@@ -1063,10 +1061,10 @@ Generates a structured plain-language summary via Groq LLM inference, strictly b
   "annual_yield_litres": 1617840.0,
   "estimated_capex_inr": 576000.0,
   "current_annual_water_cost_inr": 203100.0,
-  "payback_years": "Year 2",
+  "payback_years": "4.20 years at ₹175/KL in this example",
   "self_sufficiency_percent": 130.0,
   "recommended_configuration": "Hybrid",
-  "monte_carlo_median_breakeven_year": 2,
+  "monte_carlo_median_breakeven_year": 4.2,
   "monte_carlo_never_break_even_percent": 0.0
 }
 ```
@@ -1074,10 +1072,10 @@ Generates a structured plain-language summary via Groq LLM inference, strictly b
 **Response:**
 ```json
 {
-  "summary": "Evergreen Heights CHS demonstrates strong financial and hydrological viability for Rainwater Harvesting. With a high self-sufficiency potential of 130% relative to non-potable demand, capital expenditure of ₹5.76 Lakhs is projected to break even within Year 2 under typical monsoon conditions.",
+  "summary": "Evergreen Heights CHS demonstrates financial and hydrological potential for Rainwater Harvesting. With the submitted billing inputs, this example's Monte Carlo median break-even is 4.20 years; results remain conditional on rainfall, tank, and cost assumptions.",
   "recommendations": [
     "Adopt the recommended Hybrid system combining a 50 kL storage tank with overflow routed to the existing 95 m borewell.",
-    "Present the 10-year financial projection to the managing committee highlighting the 91% probability of full payback by Year 4.",
+    "Present the 10-year financial projection to the managing committee, including the scenario-specific break-even probability distribution.",
     "Commission a licensed civil engineer to inspect rooftop downpipe locations and structural slab load limits prior to final procurement."
   ],
   "risks": [

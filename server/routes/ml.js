@@ -40,7 +40,7 @@ router.post("/recommend", (req, res) => {
       });
     }
 
-    // 2. Tier 2 ML Classifier & SHAP
+    // 2. Express heuristic recommendation
     const result = predictConfig({
       rooftop_area,
       borewell,

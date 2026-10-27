@@ -40,9 +40,11 @@ class BillingEntry(Base):
     month = Column(Integer, nullable=False)  # 1 to 12
     year = Column(Integer, nullable=False)
     municipal_bill = Column(Float, nullable=True)
+    municipal_volume_kl = Column(Float, nullable=True)
     tankers = Column(Integer, nullable=True)
     cost_per_tanker = Column(Float, nullable=True)
     tanker_capacity_l = Column(Float, nullable=True)
+    borewell_volume_kl = Column(Float, nullable=True)
 
     society = relationship("Society", back_populates="billing_entries")
 

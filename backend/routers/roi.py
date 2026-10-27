@@ -5,6 +5,14 @@ from services.monte_carlo import run_monte_carlo
 from services.rainfall_api import fetch_daily_rainfall
 from services.tank_sizer import size_tanks
 from models.constants import ROOF_RUNOFF_COEFFICIENTS, USABILITY_FACTOR
+from models.schemas import (
+    ConfigurationComparisonRequest,
+    ConfigurationComparisonResponse,
+    CostEstimateRequest,
+    CostEstimateResponse,
+)
+from services.cost_engine import estimate_project_cost
+from services.configuration_comparison import compare_configurations
 
 router = APIRouter()
 
@@ -26,7 +34,30 @@ def roi_simulate(payload: ROIRequest) -> ROIResponse:
         annual_tanker_spend=payload.annual_tanker_spend,
         annual_tanker_volume_litres=payload.annual_tanker_volume_litres,
         annual_municipal_spend=payload.annual_municipal_spend,
+        annual_opex_inr=payload.annual_opex_inr,
     )
+
+
+@router.post("/cost-estimate", response_model=CostEstimateResponse)
+def roi_cost_estimate(payload: CostEstimateRequest) -> CostEstimateResponse:
+    return estimate_project_cost(payload)
+
+
+@router.post("/configuration-comparison", response_model=ConfigurationComparisonResponse)
+async def roi_configuration_comparison(
+    payload: ConfigurationComparisonRequest,
+) -> ConfigurationComparisonResponse:
+    rainfall_by_year = await fetch_daily_rainfall(payload.latitude, payload.longitude)
+    if not rainfall_by_year:
+        raise HTTPException(
+            status_code=503,
+            detail="No complete daily rainfall years were returned; configuration comparison was not fabricated.",
+        )
+    runoff_coefficient = ROOF_RUNOFF_COEFFICIENTS.get(
+        payload.roof_surface_type.lower(), ROOF_RUNOFF_COEFFICIENTS["concrete"]
+    )
+    result = compare_configurations(payload, rainfall_by_year, runoff_coefficient)
+    return ConfigurationComparisonResponse(**result)
 
 
 @router.post("/monte-carlo", response_model=MonteCarloResponse)
@@ -45,6 +76,7 @@ def roi_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResponse:
         rooftop_area_m2   = payload.rooftop_area_m2,
         monthly_demand_kl = payload.monthly_demand_kl,
         capex_inr         = payload.capex_inr,
+        annual_opex_inr    = payload.annual_opex_inr,
         tank_capacity_litres = payload.tank_capacity_litres,
         rainfall_reduction_percent = payload.rainfall_reduction_percent,
         tanker_rate_per_kl = payload.tanker_rate_per_kl,

@@ -16,7 +16,7 @@ describe("apiRoutes integration & logic checks", () => {
     expect(baseline.non_potable_demand_lpd).toBe(13814);
   });
 
-  it("evaluates Tier 2 ML configuration and dynamic SHAP contributions", () => {
+  it("evaluates the Express heuristic configuration and feature contributions", () => {
     const mlRec1 = predictConfig({
       rooftop_area: 800,
       borewell: 1,
@@ -29,10 +29,14 @@ describe("apiRoutes integration & logic checks", () => {
 
     expect(mlRec1.config).toBe("Hybrid");
     expect(mlRec1.confidence).toBeGreaterThan(0.85);
-    expect(mlRec1.shap_values.length).toBe(7);
+    expect(mlRec1.source).toBe("express_heuristic_classifier");
+    expect(mlRec1.shap_available).toBe(false);
+    expect(mlRec1.explanation_warning).toContain("not a trained Random Forest or SHAP");
+    expect(mlRec1.shap_values).toHaveLength(0);
+    expect(mlRec1.heuristic_feature_contributions).toHaveLength(7);
     expect(mlRec1.plain_language).toContain("Hybrid recommended");
 
-    // Dynamic SHAP check: varying area and depth must change the computed Shapley values
+    // Changing the input area and borewell depth must change their heuristic contributions.
     const mlRec2 = predictConfig({
       rooftop_area: 350,
       borewell: 1,
@@ -43,13 +47,13 @@ describe("apiRoutes integration & logic checks", () => {
       peak_day_mm: 130,
     });
 
-    const shapArea1 = mlRec1.shap_values.find(s => s.feature === "rooftop_area").shap;
-    const shapArea2 = mlRec2.shap_values.find(s => s.feature === "rooftop_area").shap;
-    expect(shapArea1).toBeGreaterThan(shapArea2);
+    const areaScore1 = mlRec1.heuristic_feature_contributions.find(s => s.feature === "rooftop_area").contribution;
+    const areaScore2 = mlRec2.heuristic_feature_contributions.find(s => s.feature === "rooftop_area").contribution;
+    expect(areaScore1).toBeGreaterThan(areaScore2);
 
-    const shapDepth1 = mlRec1.shap_values.find(s => s.feature === "borewell_depth").shap;
-    const shapDepth2 = mlRec2.shap_values.find(s => s.feature === "borewell_depth").shap;
-    expect(shapDepth2).toBeGreaterThan(shapDepth1);
+    const depthScore1 = mlRec1.heuristic_feature_contributions.find(s => s.feature === "borewell_depth").contribution;
+    const depthScore2 = mlRec2.heuristic_feature_contributions.find(s => s.feature === "borewell_depth").contribution;
+    expect(depthScore2).toBeGreaterThan(depthScore1);
   });
 
   it("evaluates Tier 1 safety trigger precedence over ML", () => {
@@ -74,6 +78,7 @@ describe("apiRoutes integration & logic checks", () => {
 
     expect(yieldRes.monthly_yield_kl.length).toBe(12);
     expect(yieldRes.annual_yield_kl).toBeGreaterThan(0);
+    expect(yieldRes.source).toBe("express_heuristic_yield");
     expect(yieldRes.physics_annual_yield_kl).toBeGreaterThan(0);
     // Yield accounts for initial abstraction wetting and saturation dynamics
     expect(typeof yieldRes.ml_deviation_percent).toBe("number");

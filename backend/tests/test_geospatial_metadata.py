@@ -50,6 +50,7 @@ class GeospatialMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.source, "auto_sarima")
         self.assertEqual(result.history_source, "synthetic_regional_fallback")
         self.assertTrue(result.fallback_used)
+        self.assertRegex(result.forecast_start_month, r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 if __name__ == "__main__":

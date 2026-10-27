@@ -9,7 +9,7 @@ describe("monteCarlo (Probabilistic Break-Even Distribution)", () => {
       capex_inr: 250000,
       tank_capacity_litres: 20000,
       n_scenarios: 500,
-      tanker_rate_per_kl: 800,
+      tanker_rate_per_kl: 175,
       annual_tanker_volume_litres: 1000000,
     });
 
@@ -27,6 +27,21 @@ describe("monteCarlo (Probabilistic Break-Even Distribution)", () => {
         result.prob_breakeven_by_year[String(yr - 1)]
       );
     }
+  });
+
+  it("uses the local ₹175/KL midpoint when no tanker rate is supplied", () => {
+    const input = {
+      rooftop_area_m2: 800,
+      monthly_demand_kl: 300,
+      capex_inr: 250000,
+      tank_capacity_litres: 20000,
+      n_scenarios: 100,
+      annual_tanker_volume_litres: 1000000,
+    };
+
+    expect(runMonteCarlo(input)).toEqual(
+      runMonteCarlo({ ...input, tanker_rate_per_kl: 175 })
+    );
   });
 
   it("handles site-specific monthly rainfall input correctly", () => {

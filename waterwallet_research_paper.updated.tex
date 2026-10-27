@@ -36,12 +36,12 @@
 \maketitle
 
 \begin{abstract}
-Urban housing societies in the Mumbai Metropolitan Region (MMR) face compounding water costs owing to dependence on private water tankers, yet Rainwater Harvesting (RWH) adoption remains low because existing tools rely on static annual rainfall figures that ignore inter-annual monsoon variability and site-specific hydrogeology. This paper presents \textit{WaterWallet}, a zero-hardware, physics-informed decision-support framework that integrates seasonal rainfall forecasting, hydrological yield modelling, machine learning classification, and probabilistic financial analysis in a single user workflow. Evaluated on fifteen years of daily precipitation data for Thane (2010--2025), an AIC-selected Auto-SARIMA model achieves a holdout MAE of 68.62~mm over 48 test months, outperforming a same-month-last-year baseline (72.75~mm) and a recursive Random Forest (136.46~mm). A dual-tier classifier---comprising a deterministic hydrogeological safety gate and a calibrated Random Forest surrogate---recommends one of three configurations (Storage-Only, Borewell-Recharge, or Hybrid), achieving 5-fold cross-validation accuracy of $0.997 \pm 0.003$ and demonstrating superior noise resilience over equivalent static rule-based methods. A comparative evaluation shows that a Multi-Layer Perceptron (MLP) neural network underperforms the Random Forest on this small tabular dataset, confirming ensemble methods as the appropriate choice at this data scale. A Monte Carlo engine samples 1,000 yield scenarios to produce a probabilistic return-on-investment profile, projecting a Year~2 break-even under median monsoon conditions. SHAP feature attributions make the classification rationale transparent to non-technical society committees. The framework offers a computationally efficient, data-driven approach to sustainable urban water planning accessible to volunteer managing committee members without specialist expertise.
+Urban housing societies in the Mumbai Metropolitan Region (MMR) face compounding water costs owing to dependence on private water tankers, yet Rainwater Harvesting (RWH) adoption remains low because existing tools rely on static annual rainfall figures that ignore inter-annual monsoon variability and site-specific hydrogeology. This paper presents \textit{WaterWallet}, a zero-hardware, physics-informed decision-support framework that integrates seasonal rainfall forecasting, hydrological yield modelling, machine learning classification, and probabilistic financial analysis in a single user workflow. The notebook evaluation uses 5,844 daily precipitation records for Thane across 2010--2025 (16 calendar years) and a chronological 48-month holdout (2022--2025). Auto-SARIMA achieves MAE 63.76~mm, RMSE 108.66~mm, and $R^2=0.823$, compared with 73.50~mm, 127.70~mm, and 0.756 for a same-month-last-year baseline. The production yield regressor is a Random Forest trained on 2010--2021 and evaluated on 2022--2024, with MAE 4.8973~KL and $R^2=0.9865$. A dual-tier classifier combines a deterministic hydrogeological safety gate with a calibrated Random Forest trained on 600 rule-labelled synthetic profiles; its held-out accuracy is 1.000, a result that reflects the synthetic label-generation process and is not evidence of field generalisation. A Monte Carlo engine samples 1,000 yield scenarios to produce a probabilistic return-on-investment profile, with a 5.22-year median break-even at the INR~175/KL reference rate. SHAP feature attributions make the classification rationale transparent to non-technical society committees. The framework offers a computationally efficient decision-support approach to sustainable urban water planning.
 \end{abstract}
 
 \begin{IEEEkeywords}
 Rainwater Harvesting, Decision-Support System, Explainable AI, SHAP,
-Auto-SARIMA, Random Forest, MLP, Monte~Carlo Simulation,
+Auto-SARIMA, Random Forest, Monte~Carlo Simulation,
 Physics-Informed Machine Learning, Urban Hydrology, IS~1172,
 Mumbai Metropolitan Region.
 \end{IEEEkeywords}
@@ -49,7 +49,7 @@ Mumbai Metropolitan Region.
 \section{Introduction}
 \label{sec:intro}
 
-Rapid urbanisation in the Mumbai Metropolitan Region (MMR) has placed municipal water distribution infrastructure under severe and growing stress. Residential cooperative housing societies in high-density districts such as Thane, Kalyan, and Navi Mumbai are forced to supplement inadequate municipal allocations with private water tankers, procured at approximately INR~800--1,600 per 10,000-litre delivery (INR~80--160/KL), compared to subsidised municipal tariffs of INR~10--15/KL \cite{anthony2024}. The NITI~Aayog's Composite Water Management Index reports that 600~million people across India face extreme water stress \cite{nitiAayog2018}, and urban groundwater depletion has been documented across major cities including Mumbai \cite{cgwb2022}. A typical 50-flat housing society in suburban Mumbai spends INR~2--5~lakh annually on tankers; compounding private tanker price inflation, historically 8--12\% per annum, can drain society reserves by INR~30--50~lakh over a ten-year horizon without producing lasting water infrastructure.
+Rapid urbanisation in the Mumbai Metropolitan Region (MMR) has placed municipal water distribution infrastructure under severe and growing stress. Residential cooperative housing societies in high-density districts such as Thane, Kalyan, and Navi Mumbai supplement municipal allocations with private water tankers. For the reference scenario, this study uses a user-reported local rate range of INR~150--200/KL and a midpoint of INR~175/KL; actual society invoices should replace this assumption. The NITI~Aayog's Composite Water Management Index reports that 600~million people across India face extreme water stress \cite{nitiAayog2018}, and urban groundwater depletion has been documented across major cities including Mumbai \cite{cgwb2022}.
 
 Rainwater Harvesting (RWH) is a proven and policy-endorsed intervention for this context. The Brihanmumbai Municipal Corporation (BMC) mandated RWH for buildings with plot areas exceeding 500~m\textsuperscript{2} under its 2007 Development Control Regulations, with enforcement tightened further in 2019 \cite{mumbai2024}. Real deployments in comparable urban contexts---for example, the SV Symphony cooperative housing society in Bengaluru---demonstrate annual savings of approximately INR~3~lakh on system investments of INR~1.6~lakh, achieving break-even within two years and preventing borewell depletion \cite{bengaluru2019}. Despite this documented evidence, standalone residential adoption remains low, with compliance estimated below 15\% among eligible properties. Three barriers drive this gap: (1)~managing committee members lack site-specific configuration guidance to distinguish between storage, borewell recharge, and hybrid configurations; (2)~financial projections in existing tools use a single static rainfall figure that does not reflect inter-annual monsoon variability; and (3)~existing systems provide no explainable rationale for their recommendations, reducing committee trust and engagement.
 
@@ -145,7 +145,7 @@ Described in Section~\ref{sec:roi}.
 
 \subsection{Data Source and Extended Temporal Window}
 
-Real daily precipitation data were sourced from the Open-Meteo Archive API~\cite{openmeteo} for Thane, Maharashtra (19.22$^\circ$N, 72.97$^\circ$E), spanning \textbf{1 January 2010 to 31 December 2025} (15~years; 5,479 daily records; 180 monthly observations). The dataset was extended from the previously used 2014--2023 window to provide a larger training corpus and a more robust 48-month held-out evaluation window. Data were aggregated from daily to monthly totals. No imputation was required; missing daily values were set to zero per Open-Meteo's documented convention.
+Real daily precipitation data were sourced from the Open-Meteo Archive API~\cite{openmeteo} for Thane, Maharashtra (19.22$^\circ$N, 72.97$^\circ$E), spanning \textbf{1 January 2010 to 31 December 2025} (16~calendar years; 5,844 daily records; 192 monthly observations). Data were aggregated from daily to monthly totals. Missing daily values were set to zero per Open-Meteo's documented convention.
 
 To prevent temporal data leakage, the dataset was split \textit{chronologically}:
 \begin{itemize}
@@ -160,7 +160,7 @@ Three forecasting methods were benchmarked:
 
 \textbf{(1) Same-Month-Last-Year Baseline:} Predicts month~$t$ as the observed value at $t - 12$. This na\"ive model sets a lower bound; any model claiming value must outperform it on at least one metric.
 
-\textbf{(2) Auto-SARIMA (AIC-selected):} Rather than manually specifying the ARIMA order, we employ \textit{pmdarima}'s \texttt{auto\_arima} procedure to search over the parameter space $(p, d, q)(P, D, Q)_{12}$ and select the order minimising the Akaike Information Criterion (AIC)~\cite{smith2020}. The search is constrained to $p \le 3, q \le 3, P \le 2, Q \le 2$ and maximum model order~8 to prevent overfitting on the 144-month training set.
+\textbf{(2) Auto-SARIMA (AIC-selected):} The notebook uses \textit{pmdarima}'s \texttt{auto\_arima} procedure to select the order minimising the Akaike Information Criterion (AIC)~\cite{smith2020}, with seasonal period 12 and stepwise search. Search bounds not specified in the notebook call use the installed \textit{pmdarima} defaults. This notebook benchmark is distinct from the operational FastAPI forecaster, which explicitly constrains $p,q \le 3$, $P,Q \le 2$, and maximum model order~8.
 
 \textbf{(3) Random Forest Regressor (recursive):} Five lag features are engineered: 1-month lag ($P_{t-1}$), 12-month lag ($P_{t-12}$), 3-month rolling mean ($\bar{P}_{t-3}$), and cyclical month encodings:
 \begin{equation}
@@ -173,24 +173,24 @@ Predictions are generated \textit{recursively}: each forecast step is appended t
 \subsection{Rainfall Forecasting Results}
 
 \begin{table}[htbp]
-\caption{Rainfall Forecasting Model Performance (48-Month Holdout, 2022--2025)}
+\caption{Notebook Rainfall Benchmark (48-Month Holdout, 2022--2025)}
 \begin{center}
 \begin{tabular}{llll}
 \toprule
 \textbf{Model} & \textbf{MAE (mm)} & \textbf{RMSE (mm)} & \textbf{$R^2$} \\
 \midrule
-\textbf{Auto-SARIMA (selected)} & \textbf{68.62} & \textbf{108.66} & \textbf{0.823} \\
-Same-Month Baseline             & 72.75 & 127.70 & 0.756 \\
-Random Forest (recursive)       & 136.46 & 180.01 & 0.514 \\
+\textbf{Auto-SARIMA (selected)} & \textbf{63.76} & \textbf{108.66} & \textbf{0.823} \\
+Same-Month-Last-Year Baseline   & 73.50 & 127.70 & 0.756 \\
+Random Forest (recursive)       & 120.26 & 180.01 & 0.514 \\
 \bottomrule
 \end{tabular}
 \label{tab:rainfall}
 \end{center}
 \end{table}
 
-Table~\ref{tab:rainfall} shows that Auto-SARIMA achieves the lowest MAE (68.62~mm) and is selected as the production rainfall forecasting component. SARIMA is preferred over the same-month baseline for its capacity to smooth single-month monsoonal anomalies and to generalise to unseen climate patterns that simple persistence models cannot capture.
+Table~\ref{tab:rainfall} reports the saved notebook run: Auto-SARIMA achieves the lowest MAE (63.76~mm) on the 48-month holdout. These metrics describe the notebook benchmark, not an evaluation of the live API, which fits a model on demand for each location and uses a separately constrained search.
 
-The Random Forest Regressor significantly underperforms both alternatives (MAE: 136.46~mm). This result is consistent with established findings: recursive autoregressive ML on small ($n = 144$), zero-inflated, bimodal monsoon series collapses toward the training mean during dry months (October--May), producing large errors when it fails to anticipate the June precipitation spike~\cite{chen2021, sharma2020}. This negative result is reported transparently because it directly informs the model-selection decision and validates the use of Auto-SARIMA.
+The recursive Random Forest underperforms both alternatives (MAE: 120.26~mm). This result is consistent with the difficulty of forecasting zero-inflated, strongly seasonal monsoon rainfall from a short training history. This benchmark is reported separately from the deployed monthly yield regressor, which estimates rooftop harvest rather than rainfall.
 
 \begin{figure}[htbp]
 \centerline{\safeincludegraphics[width=0.48\textwidth]{rainfall_forecast.png}}
@@ -217,17 +217,17 @@ Overflow in months where $Y_t > D_m$ does not contribute to financial savings un
 Three complete historical years representing the 10th (P10, dry), 50th (P50, typical), and 90th (P90, wet) annual rainfall percentiles were extracted from the 2010--2025 dataset as scenario proxies:
 
 \begin{table}[htbp]
-\caption{Historical Scenario Yield Breakdown ($A = 780$~m$^2$, $D_m = 100$~KL)}
+\caption{Historical Scenario Yield Breakdown ($A = 780$~m$^2$, $D_m = 100$~KL; tanker rate = INR~175/KL)}
 \begin{center}
 \begin{tabular}{lccccl}
 \toprule
 \textbf{Scenario} & \textbf{Year} & \textbf{Rain} & \textbf{Pot.\ Yield}
-  & \textbf{Usable} & \textbf{Yr-1 Savings} \\
- & & (mm) & (KL) & (KL) & (INR) \\
+  &   \textbf{Usable} & \textbf{Yr-1 Gross Savings} \\
+   & & (mm) & (KL) & (KL) & (INR, before AMC) \\
 \midrule
-P10 (Dry)   & 2018 & 1330.7 & 747.3  & 365.9 & 292{,}701 \\
-P50 (Typ.)  & 2017 & 1983.6 & 1114.0 & 519.4 & 415{,}500 \\
-P90 (Wet)   & 2019 & 2395.9 & 1345.5 & 515.9 & 412{,}715 \\
+P10 (Dry)   & 2018 & 1330.7 & 747.3  & 365.9 & 64{,}033 \\
+P50 (Typ.)  & 2017 & 1983.6 & 1114.0 & 519.4 & 90{,}895 \\
+P90 (Wet)   & 2019 & 2395.9 & 1345.5 & 515.9 & 90{,}283 \\
 \bottomrule
 \end{tabular}
 \label{tab:scenarios}
@@ -243,43 +243,28 @@ and P90 historical rainfall scenarios.}
 \label{fig:scenarios}
 \end{figure}
 
-\section{Deep Learning Evaluation: MLP vs Random Forest for Yield Prediction}
-\label{sec:dl}
+\section{Production Yield Regressor}
+\label{sec:yield-model}
 
-To empirically determine whether deep learning adds value over ensemble methods at this dataset scale, a Multi-Layer Perceptron (MLP) neural network was trained on the yield prediction task alongside a Random Forest Regressor.
+The production API uses a \texttt{RandomForestRegressor} to estimate monthly harvestable yield. Its training dataset uses 10 rooftop areas (200--1,500~m$^2$) and the 180 monthly observations from 2010--2024, for 1,800 (rooftop, month) rows. The chronological split contains 1,440 training rows (2010--2021) and 360 test rows (2022--2024). No rows are dropped during lag construction; missing leading lags are set to zero, matching the training implementation.
 
-\subsection{Dataset Construction}
-
-A yield dataset was constructed by applying Equation~(\ref{eq:yield}) across 10 representative rooftop sizes (150--1800~m$^2$) over all 180 historical months, yielding 1,800 (rooftop, month) pairs. Input features include: rooftop area, month (1--12), monthly rainfall depth, annual rainfall total, a peak-day proxy (monthly rainfall divided by 30), three lag features (rainfall at $t-1$, $t-2$, $t-3$), and cyclical month encodings. After lag feature engineering and dropping rows with null lag values, 1,080 complete samples remained. The same chronological split was applied: training on 2010--2021 (864 samples), testing on 2022--2025 (216 samples).
-
-\subsection{MLP Architecture}
-
-The MLP uses a three-hidden-layer architecture with ReLU activations and Dropout regularisation:
-\begin{align}
-  \text{Input}(10) &\;\to\; \text{Dense}(64, \text{ReLU}) + \text{Dropout}(0.2) \nonumber \\
-  &\;\to\; \text{Dense}(32, \text{ReLU}) + \text{Dropout}(0.2) \nonumber \\
-  &\;\to\; \text{Dense}(16, \text{ReLU}) \;\to\; \text{Dense}(1) \nonumber
-\end{align}
-The network was compiled with the Adam optimiser and MSE loss, trained for up to 200 epochs with early stopping (patience = 20). Input features were standardised using \texttt{StandardScaler} fit exclusively on the training partition to prevent data leakage.
-
-\subsection{Yield Prediction Results}
+The 10 model inputs are rooftop area, month, monthly rainfall, calendar-year rainfall total, monthly rainfall divided by 30 as a peak-day proxy, the previous one, two, and three monthly rainfall totals, and sine/cosine month encodings. The target is the physics-derived yield from Equation~(\ref{eq:yield}). The deployed estimator uses 200 trees with \texttt{random\_state=42}.
 
 \begin{table}[htbp]
-\caption{Yield Prediction: Random Forest vs MLP Neural Network}
+\caption{Production Yield Regressor Performance (2022--2024 Holdout)}
 \begin{center}
 \begin{tabular}{lcc}
 \toprule
 \textbf{Model} & \textbf{MAE (KL)} & \textbf{$R^2$} \\
 \midrule
-\textbf{Random Forest} & \textbf{7.58} & 0.9720 \\
-MLP Neural Network    & 11.52 & \textbf{0.9807} \\
+\textbf{Random Forest (production)} & \textbf{4.8973} & \textbf{0.9865} \\
 \bottomrule
 \end{tabular}
-\label{tab:dl}
+\label{tab:yield-model}
 \end{center}
 \end{table}
 
-\textbf{Finding:} The MLP achieves a marginally higher $R^2$ (0.9807 vs.\ 0.9720) but underperforms the Random Forest on MAE (11.52 vs.\ 7.58~KL). For a decision-support system where overestimation of harvestable yield leads to financially harmful recommendations, lower absolute error is the decisive criterion. This result is consistent with the well-established finding that ensemble methods typically outperform shallow neural networks on small ($n \approx 1{,}000$), structured tabular datasets~\cite{gupta2021}. The DL evaluation is reported as a principled academic comparison: deep learning is not the most appropriate architecture for this data regime, and ensemble methods are confirmed as the correct choice.
+The production artifact metrics are read from \texttt{model\_metadata.json}. The notebook's MLP is a research-only comparator and is not loaded by the API; its earlier metrics used different features and a different test window and are therefore not presented as a production-model comparison.
 
 \section{Dual-Tier RWH Configuration Classifier}
 \label{sec:classifier}
@@ -309,7 +294,7 @@ The safety gate always executes unconditionally before any classification reques
 \subsection{Tier 2: Calibrated Random Forest Classifier}
 
 \subsubsection{Training Data}
-Due to the absence of publicly labelled RWH configuration datasets for Indian housing societies, a 600-sample synthetic dataset was generated using engineering labelling rules derived from BMC guidelines~\cite{mumbai2024} and the CPHEEO Manual~\cite{cpheeo2024}. Annual rainfall statistics were drawn from the real Open-Meteo distribution ($\mu$, $\sigma$ calculated from 2010--2025 Thane data), grounding the synthetic features in real meteorological context. The synthetic approach is openly disclosed: the classifier recovers the rule boundaries from which labels were generated; it cannot discover new geological patterns absent from the rule set.
+Due to the absence of publicly labelled RWH configuration datasets for Indian housing societies, the production training script generates 600 synthetic profiles using engineering labelling rules derived from BMC guidelines~\cite{mumbai2024} and the CPHEEO Manual~\cite{cpheeo2024}. Rainfall statistics for synthetic features use the 2010--2024 Thane training window. The classifier uses a stratified 80/20 random split (480 training and 120 test samples). The synthetic approach is openly disclosed: the classifier recovers the rule boundaries from which labels were generated; it cannot discover new geological patterns absent from the rule set.
 
 \subsubsection{Input Feature Specification}
 Seven site parameters form the classifier input vector:
@@ -334,89 +319,27 @@ Seven site parameters form the classifier input vector:
 \end{center}
 \end{table}
 
-\subsubsection{Model Architecture and Selection}
-A Decision Tree (max depth~4) and a calibrated Random Forest classifier (100~estimators, \texttt{CalibratedClassifierCV} with sigmoid calibration over 5 folds, stratified 80/20 split, 5-fold cross-validation) were compared. Probability calibration corrects the known tendency of uncalibrated Random Forests to cluster predicted probabilities away from 0 and 1, producing more reliable confidence scores for committee communication:
+\subsubsection{Model Architecture and Evaluation}
+The production model is a calibrated Random Forest classifier with 200 estimators, wrapped in \texttt{CalibratedClassifierCV} using sigmoid calibration over 5 folds. It is evaluated on a stratified 80/20 split of the 600 synthetic profiles (480 training and 120 test samples). The notebook also retains a Decision Tree as a research baseline, but it is not part of the production API.
 
 \begin{table}[htbp]
 \caption{RWH Configuration Classifier Performance}
 \begin{center}
-\begin{tabular}{llll}
+\begin{tabular}{lccc}
 \toprule
-\textbf{Model} & \textbf{Test Acc.} & \textbf{5-Fold CV} & \textbf{CV Std.} \\
+\textbf{Production Model} & \textbf{Test Acc.} & \textbf{Balanced Acc.} & \textbf{Macro-F1} \\
 \midrule
-\textbf{Random Forest} & \textbf{1.000} & \textbf{0.997} & \textbf{0.003} \\
-Decision Tree          & 1.000          & 0.995          & 0.007          \\
+\textbf{Calibrated Random Forest} & \textbf{1.000} & \textbf{1.000} & \textbf{1.000} \\
 \bottomrule
 \end{tabular}
 \label{tab:classifier}
 \end{center}
 \end{table}
 
-Both models achieve near-perfect accuracy on the rule-generated synthetic data---an expected result since test labels derive from the same engineering rules used for training. The Random Forest's lower cross-validation standard deviation (0.003 vs.\ 0.007) indicates more stable generalisation, and its well-calibrated probability scores better communicate recommendation uncertainty. The Decision Tree's internal rules were confirmed to correctly implement the engineering logic using \texttt{export\_text}.
+The model achieves perfect held-out scores on these rule-generated synthetic profiles---an expected result since test labels derive from the same engineering rules used for training. These scores demonstrate implementation consistency with the labels, not generalisation to independent field data. The deployed classifier's metrics are recorded in \texttt{model\_metadata.json}; no 5-fold cross-validation accuracy is reported as a production metric.
 
-\begin{figure}[htbp]
-\centerline{\safeincludegraphics[width=0.48\textwidth]{p2_model_comparison.png}}
-\caption{Confusion matrices and 5-fold cross-validation accuracy comparison
-for the Decision Tree and Random Forest classifiers.}
-\label{fig:classifier}
-\end{figure}
-
-\subsection{Empirical Validation: ML Classifier vs Static Rule System}
-\label{sec:benchmarking}
-
-Three benchmarking tests were performed to empirically evaluate the ML classifier relative to an equivalent static rule-based system.
-
-\subsubsection{Test 1: Perturbation Noise Stability}
-Gaussian noise was added to all continuous site features at three intensity levels ($\pm$5\%, $\pm$10\%, $\pm$20\% of standard deviation) over all 600 samples. The resulting \textit{Flip Rate}---the fraction of samples where the recommended configuration changed---was recorded for both systems:
-
-\begin{table}[htbp]
-\caption{Recommendation Flip Rate Under Gaussian Input Noise}
-\begin{center}
-\begin{tabular}{lll}
-\toprule
-\textbf{Noise Level} & \textbf{ML Flip Rate} & \textbf{Rule Flip Rate} \\
-\midrule
-$\pm$5\%  & 0.7\%  & 2.3\% \\
-$\pm$10\% & 1.4\%  & 4.1\% \\
-$\pm$20\% & 3.1\%  & 7.8\% \\
-\bottomrule
-\end{tabular}
-\label{tab:fliprate}
-\end{center}
-\end{table}
-
-The ML classifier has a consistently lower Flip Rate at all noise levels. Ensemble averaging over 100 trees produces more robust recommendations than a single threshold applied to one feature at a time---a practical advantage because user-provided inputs such as borewell depth and coastal distance are often approximations rather than precisely measured values.
-
-\subsubsection{Test 2: Decision Boundary Continuity}
-One hundred synthetic site profiles were generated along a continuous coastal distance gradient (0.5--5.0~km) with all other features held constant. The ML classifier transitioned smoothly between classes with sigmoid-shaped probability curves, communicating recommendation uncertainty in the ambiguous boundary region. The static rule system produced a step-function discontinuity: a site at 2.49~km and a site at 2.51~km received categorically different recommendations with no indication of proximity to the decision boundary. Smooth probability curves allow committees to understand the degree of confidence and to request expert review when a site falls near a boundary.
-
-\begin{figure}[htbp]
-\centerline{\safeincludegraphics[width=0.48\textwidth]{boundary_continuity.png}}
-\caption{Decision boundary continuity: ML classifier produces smooth
-probability curves across the coastal threshold (left), while static rules
-produce a step-function cliff (right).}
-\label{fig:boundary}
-\end{figure}
-
-\subsubsection{Test 3: Inference Latency}
-Both systems were benchmarked over 200 single-sample inference runs and one 10,000-sample batch:
-
-\begin{table}[htbp]
-\caption{ML Classifier vs Static Rules: Inference Latency}
-\begin{center}
-\begin{tabular}{lll}
-\toprule
-\textbf{Benchmark} & \textbf{ML Classifier} & \textbf{Static Rules} \\
-\midrule
-Single-sample median latency & $<$3 ms & $<$1 ms \\
-10,000-sample batch latency  & $<$85 ms & $<$12 ms \\
-\bottomrule
-\end{tabular}
-\label{tab:latency}
-\end{center}
-\end{table}
-
-Both systems operate well under 15~ms per single-sample query, confirming that ML inference and SHAP computation introduce no meaningful latency overhead in the web application context.
+\subsection{Evaluation Scope}
+The reported classifier scores describe the production training script's stratified 80/20 holdout on synthetic, rule-labelled profiles. Earlier notebook experiments also included noise perturbation, decision-boundary, and latency comparisons, but used a different labelling function and model setup. Those results are omitted because they do not validate the current production classifier.
 
 \section{Out-of-Sample Validation and SHAP Explainability}
 \label{sec:shap}
@@ -429,10 +352,11 @@ To validate the system on real data entirely unseen during training, the classif
   \item Borewell: Present ($B_w = 1$), Depth: 95~m
   \item Soil Permeability: Class~3 (Laterite / Inceptisol, NBSS\&LUP MMR~\cite{nbsslup})
   \item Coastal Distance: 25~km
+  \item Rainfall features: 1,790.0~mm mean annual rainfall and 25.4~mm mean peak daily rainfall (2010--2024 Thane reference series)
   \item Expert Hydrological Assessment: \textbf{Hybrid}
 \end{itemize}
 
-The Tier~1 safety gate passed the site (25~km $> 2.5$~km; borewell present; $S_p = 3 \ge 2$; $d_{bw} = 95 > 30$~m). The calibrated Random Forest classifier predicted \textbf{Hybrid} with \textbf{96.0\% confidence}, in exact agreement with the domain expert's ground truth assessment.
+The Tier~1 safety gate passed the site (25~km $> 2.5$~km; borewell present; $S_p = 3 \ge 2$; $d_{bw} = 95 > 30$~m). With the stated rainfall features, the trained production classifier predicted \textbf{Hybrid} with \textbf{97.1\% confidence}, matching the domain expert's assessment. This is a single case result, not an estimate of field generalisation.
 
 \subsection{SHAP Feature Attributions}
 
@@ -445,20 +369,20 @@ SHAP (SHapley Additive exPlanations) values~\cite{lundberg} attribute each predi
 \toprule
 \textbf{Feature} & \textbf{Value} & \textbf{SHAP} & \textbf{Interpretation} \\
 \midrule
-\texttt{borewell}         & 1 (Yes)   & $+0.172$ & Primary recharge enabler \\
-\texttt{borewell\_depth}  & 95~m      & $+0.162$ & Confirms aquifer depth   \\
-\texttt{rooftop\_area}    & 710~m$^2$ & $+0.161$ & High runoff potential    \\
-\texttt{coastal\_km}      & 25~km     & $+0.044$ & No intrusion risk        \\
-\texttt{soil\_perm}       & 3         & $+0.011$ & Moderate percolation     \\
-\texttt{annual\_rain\_mm} & 1873~mm   & $+0.002$ & Standard MMR rainfall    \\
-\texttt{peak\_day\_mm}    & 51.1~mm   & $-0.002$ & Minor intensity penalty  \\
+\texttt{borewell}         & 1 (Yes)   & $+0.1631$ & Primary recharge enabler \\
+\texttt{borewell\_depth}  & 95~m      & $+0.1753$ & Confirms aquifer depth   \\
+\texttt{rooftop\_area}    & 710~m$^2$ & $+0.1341$ & High runoff potential    \\
+\texttt{coastal\_km}      & 25~km     & $+0.0397$ & No intrusion risk        \\
+\texttt{soil\_perm}       & 3         & $+0.0476$ & Moderate percolation     \\
+\texttt{annual\_rain\_mm} & 1790.0~mm & $-0.0023$ & Near-neutral contribution \\
+\texttt{peak\_day\_mm}    & 25.4~mm   & $+0.0011$ & Near-neutral contribution \\
 \bottomrule
 \end{tabular}
 \label{tab:shap}
 \end{center}
 \end{table}
 
-All seven features contribute positively or are near-neutral; only peak daily rainfall intensity shows a slight negative attribution (reflecting increased overflow risk). The three dominant drivers---borewell presence, borewell depth, and rooftop area---are physically coherent: a deep borewell confirms access to a confined aquifer where recharge is safe and effective, and a large rooftop produces sufficient yield to justify a hybrid configuration. The system translates these values into a plain-language advisory on the committee dashboard: \textit{``The system recommends Hybrid primarily because borewell presence, borewell depth (95~m), and rooftop area (710~m$^2$) support this configuration.''}
+Feature contributions are model-relative explanations, not physical measurements or causal effects. Borewell presence, borewell depth, and rooftop area are the three strongest positive drivers for this prediction. The system translates these values into a plain-language advisory on the committee dashboard.
 
 \begin{figure}[htbp]
 \centerline{\safeincludegraphics[width=0.48\textwidth]{p2_shap.png}}
@@ -476,7 +400,7 @@ A deterministic ROI engine computes break-even based on a single annual yield de
 
 \subsection{ROI Formulation}
 
-For each of $N = 1{,}000$ sampled scenarios, monthly rainfall is drawn from the site-specific historical distribution. When site-specific rainfall data is available, each month's value is sampled uniformly within $\pm$20\% of the historical monthly mean ($U[0.80 \times R_m, 1.20 \times R_m]$). When unavailable, samples are drawn uniformly between historical $P_{10}$ and $P_{90}$ monthly percentiles from the Thane reference dataset. The yield formula (Eq.~\ref{eq:yield}) and demand gate (Eq.~\ref{eq:gating}) are applied to obtain scenario-specific annual usable yield. The 10-year cash flow for scenario $s$ and year $y$ is:
+For each of $N = 1{,}000$ sampled scenarios, monthly rainfall is drawn from the site-specific historical distribution. When site-specific rainfall data is available, each month's value is sampled uniformly within $\pm$20\% of the historical monthly mean ($U[0.80 \times R_m, 1.20 \times R_m]$). When unavailable, samples are drawn uniformly between historical $P_{10}$ and $P_{90}$ monthly percentiles from the Thane reference dataset. The yield formula (Eq.~\ref{eq:yield}) is applied, then a monthly water balance limits use to a 50{,}000~L tank and 100~KL/month eligible demand. The 10-year simulation applies a year-specific $\pm$15\% climate factor to usable yield, 8\% annual tanker-price inflation, and 3\% of CAPEX as annual maintenance. The representative rate sensitivity below assumes a 780~m$^2$ catchment, INR~500{,}000 CAPEX, and annual tanker purchases of 1{,}333.3~KL; these purchases cover the modeled usable yield, so savings are valued at the tanker rate. The cash flow for scenario $s$ and year $y$ is:
 \begin{equation}
   CF_{y,s} = \sum_{t=1}^{12} Y_{\text{usable},t,s}
              \times \text{Cost}_{\text{tanker}}
@@ -494,25 +418,25 @@ The break-even year is the first $y$ for which $\text{NetPos}_{y,s} \geq 0$. The
 \subsection{Monte Carlo Results}
 
 \begin{table}[htbp]
-\caption{Monte Carlo Break-Even Distribution
-($\text{CAPEX} = \text{INR~500,000}$, $r = 0.08$, 1,000 scenarios)}
+\caption{Monte Carlo Break-Even Sensitivity to Local Tanker Rates
+($A = 780$~m$^2$, $D_m = 100$~KL, 50{,}000~L tank, CAPEX = INR~500,000, 1,000 scenarios)}
 \begin{center}
-\begin{tabular}{ll}
+\begin{tabular}{lcccc}
 \toprule
-\textbf{Metric} & \textbf{Value} \\
+\textbf{Tanker rate} & \textbf{Median break-even} & \textbf{P10--P90 range} &
+  \textbf{Prob. $\leq$ Year 5} & \textbf{Prob. $\leq$ Year 6} \\
+\textbf{(INR/KL)} & \textbf{(years)} & \textbf{(years)} & & \\
 \midrule
-P50 scenario Year-1 savings         & INR 415{,}500        \\
-Median break-even year              & Year 2               \\
-Prob(break-even $\leq$ Year 2)      & 100\%                \\
-Prob(break-even $\leq$ Year 3)      & 100\%                \\
-Prob(break-even $\leq$ Year 4)      & 100\%                \\
+150 & 6.02 & 5.63--6.44 & 0\% & 47.9\% \\
+175 & 5.22 & 4.88--5.60 & 25.1\% & 100\% \\
+200 & 4.60 & 4.30--4.95 & 94.0\% & 100\% \\
 \bottomrule
 \end{tabular}
 \label{tab:mc}
 \end{center}
 \end{table}
 
-The Year~2 median break-even with 100\% probability across all 1,000 scenarios reflects the high tanker water cost and the CAPEX assumption of INR~500,000. This result should be interpreted alongside the limitation that monthly rainfall is currently sampled independently, which does not preserve within-year autocorrelation between consecutive wet months. Bootstrap resampling of complete historical years would provide a more statistically coherent uncertainty estimate.
+At the INR~175/KL midpoint, the median break-even is 5.22~years and all scenarios break even by Year~6; at INR~150/KL, fewer than half break even by Year~6. These rate-sensitive results replace the earlier Year~2 estimate, which assumed INR~800/KL. They remain conditional on the stated roof, demand, tank, CAPEX, and annual tanker-volume assumptions, and on independently sampled monthly rainfall; this sampling does not preserve within-year autocorrelation between consecutive wet months. Bootstrap resampling of complete historical years would provide a more statistically coherent uncertainty estimate.
 
 \begin{figure}[htbp]
 \centerline{\safeincludegraphics[width=0.48\textwidth]{monte_carlo_roi.png}}
@@ -522,19 +446,6 @@ annual usable yield distribution (right).}
 \label{fig:mc}
 \end{figure}
 
-\subsection{ROI Sensitivity Analysis via Gradient Boosting}
-\label{sec:sensitivity}
-
-To identify which input parameters most strongly drive the break-even year, 10,000 synthetic ROI scenarios were generated by sampling seven variables from realistic MMR ranges: rooftop area (300--2000~m$^2$), annual rainfall (1200--3000~mm), CAPEX (INR~200,000--900,000), tanker inflation (5--14\%), AMC rate (2--5\%), tanker rate (INR~600--1100/KL), and annual demand (60--200~KL). A Gradient Boosting Regressor (300 estimators, depth~4, learning rate~0.05) was trained to predict break-even year, achieving $R^2 > 0.90$ on 5-fold cross-validation. SHAP was applied to rank variable importance.
-
-Tanker inflation rate emerges as the dominant sensitivity variable: a 2~percentage-point increase in annual tanker price inflation advances the median break-even by approximately 0.5--0.8~years. CAPEX level is the second-strongest driver, followed by tanker rate and rooftop area. Annual rainfall and AMC rate have comparatively modest influence within the MMR parameter ranges, reflecting that even P10 dry-year rainfall (approximately 1,300~mm) is sufficient to generate meaningful yield from a 780~m$^2$ catchment.
-
-\begin{figure}[htbp]
-\centerline{\safeincludegraphics[width=0.48\textwidth]{roi_sensitivity.png}}
-\caption{ROI sensitivity analysis: SHAP feature importance over break-even
-year (left) and tanker inflation vs break-even scatter (right).}
-\label{fig:sensitivity}
-\end{figure}
 \section{Discussion}
 \label{sec:discussion}
 
@@ -543,15 +454,15 @@ year (left) and tanker inflation vs break-even scatter (right).}
 WaterWallet addresses five structural shortcomings in conventional urban rainwater harvesting decision tools:
 
 \begin{enumerate}
-  \item \textbf{Rigorously Evaluated Auto-SARIMA Forecasting:} Departing from fixed-order heuristics, an AIC-guided grid search over a 15-year historical window (2010--2025) yielded an optimal SARIMA0 1 1(0,1,1)_{12}$ specification. Rigorous evaluation across an untouched 48-month out-of-sample test horizon (2021--2025) achieved an MAE of 68.62~mm (^2 = 0.887$), outperforming baseline persistence and moving-average benchmarks while preserving monsoon cyclicity without sensor hardware overhead.
+  \item \textbf{Notebook Auto-SARIMA Benchmark:} A stepwise AIC-selected model, $\mathrm{SARIMA}(0,0,2)(2,0,1)_{12}$, was evaluated on the notebook's 48-month 2022--2025 holdout, achieving MAE 63.76~mm, RMSE 108.66~mm, and $R^2=0.823$. These are notebook experiment results; the live API independently fits a model per request.
   
   \item \textbf{Dual-Tier Hydrogeological Safety Gate:} By decoupling non-negotiable physical constraints (Tier~1 deterministic vetting) from probabilistic pattern classification (Tier~2 Random Forest), the architecture prevents catastrophic deployment errors (such as recommending injection borewells in low-permeability clay or shallow water tables), establishing an algorithmic safeguard unprecedented in municipal civic-tech calculators.
   
-  \item \textbf{Empirical Resolution of the ML vs.\ DL Paradigm for Tabular Hydro-Economics:} Systematic benchmarking against an optimized Multi-Layer Perceptron demonstrated that Random Forest (^2 = 0.9998$, MAE = 1.15~KL) decisively outperforms deep neural networks (^2 = 0.9926$, MAE = 8.79~KL) on structured hydrological tabular data, establishing that domain-feature engineering and tree ensembles remain superior to deep architectures at this dataset scale.
+  \item \textbf{Production Yield Estimation:} The deployed Random Forest regressor uses ten rainfall, rooftop, lag, and seasonal features and achieves MAE 4.8973~KL and $R^2=0.9865$ on the 2022--2024 temporal test set. The notebook's MLP remains a research-only comparator and is not used by the API.
   
   \item \textbf{Characterization of the Demand-Gated Yield Paradox:} Dynamic mass-balance simulation demonstrated that peak monsoon precipitation (P90 wet year, 3,425~mm) yields lower usable water (515.9~KL) than a typical year (P50, 2,520~mm yielding 519.4~KL) due to early tank saturation and storage overflow. This counter-intuitive reality exposes the systemic over-sizing hazard inherent in static annual runoff calculators.
   
-  \item \textbf{Probabilistic Risk-Aware Financial Communication:} Transforming single-point payback estimates into a 1,000-scenario Monte~Carlo distribution, supplemented by Gradient Boosting SHAP sensitivity attribution, equips housing society management committees with credible risk envelopes, revealing tanker price inflation as the primary macroeconomic driver of break-even acceleration.
+  \item \textbf{Probabilistic Risk-Aware Financial Communication:} Transforming single-point payback estimates into a 1,000-scenario Monte~Carlo distribution equips housing society management committees with rate-sensitive break-even estimates and uncertainty ranges.
 \end{enumerate}
 
 \subsection{Comparative Analysis with Existing Paradigms}
@@ -584,9 +495,9 @@ Civic Usability               & High (Over-simplified)        & Low (Industrial 
 In adherence to rigorous academic standards, several operational and methodological limitations must be acknowledged:
 
 \begin{enumerate}
-  \item \textbf{Synthetic Training Dependency for Classifier:} The Tier~2 classifier was trained on 600 synthetic profiles derived from municipal guidelines and hydrogeological domain bounds. While stratified cross-validation and Thane field validation confirm mathematical fidelity to these rules, the model is inherently bounded by the codified rules and cannot extrapolate novel unobserved geological anomalies. Field data collection across 30--50 operational MMR housing societies represents the most critical immediate priority.
+  \item \textbf{Synthetic Training Dependency for Classifier:} The Tier~2 classifier was trained on 600 synthetic profiles derived from municipal guidelines and hydrogeological domain bounds. Its perfect held-out scores reflect labels generated by the same rules and do not demonstrate performance on independent sites. The model is inherently bounded by those codified rules and cannot extrapolate novel unobserved geological anomalies. Field data collection across 30--50 operational MMR housing societies represents the most critical immediate priority.
   
-  \item \textbf{Single Out-of-Sample Field Case Study:} Although the Thane society validation demonstrated 96.0\% class confidence and perfect ground-truth agreement, validation on a single physical site cannot definitively establish regional generalization across diverse basaltic weathering grades.
+  \item \textbf{Single Out-of-Sample Field Case Study:} The production model's 97.1\% confidence and agreement with the Thane site's expert label are based on one site; this cannot establish regional generalization across diverse basaltic weathering grades.
   
   \item \textbf{Monsoon Rainfall Autocorrelation in Monte Carlo Sampling:} The current Monte~Carlo ROI engine draws monthly rainfall totals from fitted lognormal distributions independently across months. While seasonal parameterization mirrors historical variance, within-year temporal correlation (e.g., an exceptionally wet July correlating with an intense August) is partially smoothed. Future iterations will adopt block bootstrap resampling of complete historical monsoon sequences.
   
@@ -600,7 +511,7 @@ In adherence to rigorous academic standards, several operational and methodologi
 
 This paper introduced \textbf{WaterWallet}, an end-to-end, zero-hardware, physics-informed decision-support framework designed to bridge the technical, geological, and financial barriers hindering residential rainwater harvesting adoption in the Mumbai Metropolitan Region. 
 
-The framework synthesizes an automated Auto-SARIMA forecasting engine (MAE 68.62~mm across 48 holdout months), a daily demand-gated mass-balance yield engine anchored in IS~1172 standards, a dual-tier hydrogeological safety classifier guarded by deterministic municipal thresholds, an empirical validation establishing tree ensemble superiority over deep architectures for tabular yield estimation, and a 1,000-scenario Monte~Carlo investment engine coupled with Tree-SHAP interpretability. In out-of-sample field validation on a 120-resident Thane society, WaterWallet recommended a Hybrid configuration with 96.0\% confidence and projected a 2-year median break-even (100\% probability $\\leq$ 4 years), successfully demystifying community adoption.
+The framework combines a notebook-benchmarked Auto-SARIMA forecaster (MAE 63.76~mm across the 2022--2025 holdout), a production Random Forest yield regressor (MAE 4.8973~KL on the 2022--2024 holdout), a dual-tier hydrogeological safety classifier, and a Monte~Carlo investment engine with Tree-SHAP explanations. In the single Thane reference case, the production classifier recommended Hybrid with 97.1\% confidence. At the INR~175/KL reference rate, the Monte~Carlo median break-even is 5.22~years; these results are conditional on the simulation assumptions and do not guarantee an individual society's payback.
 
 Future work will expand across four primary vectors:
 \begin{enumerate}

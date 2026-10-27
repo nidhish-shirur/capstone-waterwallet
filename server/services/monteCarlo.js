@@ -1,6 +1,6 @@
 import { THANE_RAIN_PERCENTILES } from "../constants.js";
 
-const TANKER_COST_PER_KL = 800.0;
+const TANKER_COST_PER_KL = 175.0;
 const INFLATION_RATE = 0.08;
 const AMC_RATE = 0.03;
 const ROI_YEARS = 10;

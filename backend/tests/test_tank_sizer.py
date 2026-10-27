@@ -4,6 +4,26 @@ from services.tank_sizer import simulate_tank_year, size_tanks
 
 
 class TankSizerTests(unittest.TestCase):
+    def test_monthly_storage_summary_uses_daily_simulation(self) -> None:
+        result = simulate_tank_year(
+            rainfall_mm=[10.0] * 31 + [0.0] * 334,
+            tank_capacity_litres=1000,
+            daily_demand_litres=0,
+            usable_roof_area_sqm=10,
+            runoff_coefficient=1,
+            first_flush_fraction=0,
+            year=2021,
+            recharge_enabled=False,
+        )
+
+        self.assertEqual(result.monthly_inflow_litres[0], 3100)
+        self.assertEqual(result.monthly_inflow_litres[1], 0)
+        self.assertEqual(result.monthly_ending_storage_litres[0], 1000)
+        self.assertEqual(result.monthly_ending_storage_litres[1], 1000)
+        self.assertEqual(result.monthly_lost_overflow_litres[0], 2100)
+        self.assertEqual(result.monthly_recharge_overflow_litres[0], 0)
+        self.assertEqual(len(result.monthly_ending_storage_litres), 12)
+
     def test_simulator_uses_actual_year_length(self) -> None:
         for year, days in [(2012, 366), (2016, 366), (2020, 366), (2024, 366), (2021, 365)]:
             with self.subTest(year=year):

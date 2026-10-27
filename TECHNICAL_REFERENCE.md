@@ -408,7 +408,9 @@ Safety rules take absolute precedence over machine learning model probabilities.
 **File:** `backend/services/ml_engine.py`  
 **Trained Model:** `waterwallet_config_classifier.pkl` (Random Forest Classifier)
 
-When Tier 1 passes, the payload is evaluated by a Random Forest Classifier trained on hydrogeological survey datasets.
+**Production architecture:** `CalibratedClassifierCV(RandomForestClassifier(n_estimators=200), method="sigmoid", cv=5)`
+
+When Tier 1 passes, the payload is evaluated by a calibrated Random Forest Classifier trained on 600 synthetic, rule-labelled site profiles. Its perfect holdout score measures consistency with those synthetic rules, not field generalization.
 
 **Input Features (7):**
 1. `rooftop_area` (m²)
@@ -437,7 +439,11 @@ When Tier 1 passes, the payload is evaluated by a Random Forest Classifier train
 Predicts monthly harvestable yield (KL) by incorporating rainfall dynamics, seasonality, and precipitation lags.
 
 **Input Features (10):**
-`rooftop_area`, `month`, `rain_mm`, `annual_rain_mm`, `peak_day`, `lag1_rain`, `lag2_rain`, `lag3_rain`, `sin_month`, `cos_month`
+`rooftop_area`, `month`, `rain_mm`, `annual_rain_mm`, `peak_day_proxy`, `lag1_rain`, `lag2_rain`, `lag3_rain`, `sin_month`, `cos_month`
+
+The production training set uses 10 rooftop sizes and 180 months (2010–2024):
+1,800 rows total, split chronologically into 1,440 training rows (2010–2021)
+and 360 test rows (2022–2024). Leading lag values are filled with zero.
 
 **Physics Fallback Mechanism:**
 If `waterwallet_yield_model.pkl` is absent or uninitialized, the engine automatically falls back to the deterministic runoff equation:
@@ -455,7 +461,7 @@ Replaces static payback estimates with probabilistic risk modeling.
 1. **Sampling:** Performs $N = 1,000$ iterations by uniformly sampling monthly rainfall between historical $P_{10}$ and $P_{90}$ monthly precipitation distributions derived from Thane climatological archives (`thane_rain_percentiles.csv`).
 2. **Yield & Demand Gating:** Computes monthly yield per sample and applies a hard monthly demand cap:
    $$\text{Usable Yield}_m = \min(\text{Yield}_m, \text{Demand}_m)$$
-3. **Financial Escalation:** Simulates 10-year cash flows applying compound annual tanker inflation ($\gamma = 8\%$) vs. fixed maintenance costs ($\text{AMC} = 3\% \text{ of Capex}$).
+3. **Financial Escalation:** Simulates 10-year cash flows applying compound annual tanker inflation ($\gamma = 8\%$). Annual OPEX uses the itemized cost estimate when provided; older callers retain the 3%-of-CAPEX default.
 4. **Output Metrics:** Returns cumulative break-even probability distributions across Years 1–10 (e.g., *"72% chance of break-even by Year 3, 91% by Year 4"*), median break-even year, $P_{10}/P_{50}/P_{90}$ percentiles, and risk percentage of never breaking even within 10 years.
 
 ---
@@ -479,9 +485,38 @@ Replaces static payback estimates with probabilistic risk modeling.
 | `POST` | `/api/catchment/forecast` | Auto-SARIMA 12-month rainfall forecast + yield | Geospatial |
 | `POST` | `/api/roi/simulate` | Deterministic 10-year ROI simulation | ROI |
 | `POST` | `/api/roi/monte-carlo` | 1,000-scenario Monte Carlo ROI simulation | ROI |
+| `POST` | `/api/roi/cost-estimate` | Itemized CAPEX and annual OPEX estimate | ROI |
+| `POST` | `/api/roi/configuration-comparison` | Daily water-balance comparison for three configurations | ROI |
+| `GET` | `/api/societies/{id}/water-audit` | 12-month audit of saved water-supply records | Societies |
 | `POST` | `/api/ml/recommend` | Dual-tier RWH config recommendation + SHAP | ML — Recommend |
 | `POST` | `/api/ml/yield` | Random Forest monthly yield prediction | ML — Yield |
 | `POST` | `/api/report/generate` | Server-side PDF report generator (HTTP 501) | Report |
+
+### Itemized cost and configuration comparison
+
+`POST /api/roi/cost-estimate` calculates CAPEX and OPEX from the current planning
+rates and returns each component with its unit, assumption source, and completeness
+status. The current model adds the existing usable-area catchment/installation
+estimate to the tank estimate for storage systems. This additive scope is a
+planning assumption and must be checked against contractor quotations to avoid
+double-counting. Recharge CAPEX, OPEX, and payback remain unavailable until a
+recharge connection quotation is supplied.
+
+`POST /api/roi/configuration-comparison` fetches complete daily rainfall years and
+compares storage-only, recharge-only, and hybrid systems through the existing tank
+water-balance service. It returns an explicit unavailable error when daily rainfall
+is missing and applies the Tier 1 safety gate to recharge scenarios. Only directly
+useful water is eligible for tanker savings; recharge overflow is reported
+separately and never credited as delivered water.
+
+The dashboard passes the same backend itemized CAPEX/OPEX to deterministic ROI
+and Monte Carlo. Monte Carlo retains the legacy CAPEX-based 3% maintenance default
+for callers that omit `annual_opex_inr`.
+
+The authenticated `GET /api/societies/{id}/water-audit` summarizes the saved
+12-month supply records. Missing municipal or borewell volumes remain unknown;
+they are not treated as measured zeroes. The audit schema migration adds nullable
+columns so existing billing history remains intact.
 
 ---
 
@@ -585,7 +620,7 @@ Runs 1,000 stochastic simulations sampling rainfall between $P_{10}$ and $P_{90}
   "rooftop_area_m2": 960.0,
   "monthly_demand_kl": 1000.0,
   "capex_inr": 480000.0,
-  "tanker_rate_per_kl": 800.0,
+  "tanker_rate_per_kl": 175.0,
   "inflation_rate": 0.08,
   "n_scenarios": 1000
 }
@@ -684,6 +719,12 @@ Predicts monthly yield using Random Forest Regressor, with physics fallback.
 }
 ```
 
+The Python FastAPI endpoints load the trained model artifacts. The separate
+Express implementation in `server/services/mlEngine.js` is a demo heuristic:
+its recommendation source is `express_heuristic_classifier`, and its yield
+source is `express_heuristic_yield`. Those responses are not trained Random
+Forest predictions; the Express feature contributions are not SHAP values.
+
 ---
 
 ## Pydantic Schemas & Data Validation
@@ -698,6 +739,8 @@ Key Pydantic models enforcing structural, numeric, and domain-level integrity:
 | `CatchmentRequest` | Geospatial payload | `latitude ∈ [-90, 90]`, `longitude ∈ [-180, 180]`, `roof_area_sqm > 0` |
 | `ROIRequest` | Simulation payload | `water_tariff_per_kl > 0` (custom `@field_validator` prevents zero-division) |
 | `MonteCarloRequest` | Stochastic ROI payload | `n_scenarios ∈ [100, 5000]`, `inflation_rate ∈ [0, 0.5]` |
+| `CostEstimateRequest` | Configurable CAPEX/OPEX assumptions | Non-negative rates; missing recharge quotation leaves CAPEX/OPEX incomplete |
+| `ConfigurationComparisonRequest` | Historical daily configuration comparison | Recharge scenarios remain subject to Tier 1 safety; financial savings require available tanker records |
 | `MLRecommendRequest` | ML System payload | `borewell ∈ [0, 1]`, `soil_perm ∈ [1, 5]`, `coastal_km > 0` |
 | `MLYieldRequest` | ML Yield payload | `monthly_rainfall_mm` length enforced strictly to 12 elements |
 | `SHAPValue` | Feature attribution | Captures `feature`, input `value`, and `shap` contribution score |

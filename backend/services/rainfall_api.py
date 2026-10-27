@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 
 import httpx
@@ -168,11 +169,18 @@ async def fetch_monthly_rainfall_history(
     Unlike ``fetch_monthly_rainfall``, this preserves each individual
     year-month observation so a seasonal time-series model can learn from it.
     """
+    current_month = datetime.now(timezone.utc).replace(day=1)
+    last_complete_month = current_month - timedelta(days=1)
+    last_complete_month_index = last_complete_month.year * 12 + last_complete_month.month - 1
+    start_month_index = last_complete_month_index - (RAINFALL_YEARS * 12 - 1)
+    start_year, start_month_zero_index = divmod(start_month_index, 12)
+    start_month = start_month_zero_index + 1
+    history_start = datetime(start_year, start_month, 1, tzinfo=timezone.utc)
     params = {
         "latitude": latitude,
         "longitude": longitude,
-        "start_date": f"{RAINFALL_START_YEAR}-01-01",
-        "end_date": f"{RAINFALL_END_YEAR}-12-31",
+        "start_date": history_start.strftime("%Y-%m-%d"),
+        "end_date": last_complete_month.strftime("%Y-%m-%d"),
         "daily": "precipitation_sum",
         "timezone": "auto",
     }
@@ -182,21 +190,36 @@ async def fetch_monthly_rainfall_history(
             response = await client.get(OPEN_METEO_URL, params=params)
             response.raise_for_status()
             data = response.json()
-            daily_dates: list[str] = data["daily"]["time"]
-            daily_precip: list[float] = data["daily"]["precipitation_sum"]
+            daily_data = data.get("daily") or {}
+            daily_dates: list[str] = daily_data.get("time") or []
+            daily_precip: list[float] = daily_data.get("precipitation_sum") or []
+            if len(daily_dates) != len(daily_precip):
+                raise ValueError("Historical rainfall response had mismatched date and precipitation lengths.")
             monthly_totals: dict[tuple[int, int], float] = {}
+            monthly_day_counts: dict[tuple[int, int], int] = {}
 
             for date_str, precip in zip(daily_dates, daily_precip):
-                year = int(date_str[:4])
-                month = int(date_str[5:7])
-                key = (year, month)
-                monthly_totals[key] = monthly_totals.get(key, 0.0) + (precip or 0.0)
+                observation_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                if precip is None:
+                    raise ValueError("Historical rainfall response contained a null precipitation value.")
+                value = float(precip)
+                if not isfinite(value) or value < 0:
+                    raise ValueError("Historical rainfall response contained an invalid precipitation value.")
+                key = (observation_date.year, observation_date.month)
+                monthly_totals[key] = monthly_totals.get(key, 0.0) + value
+                monthly_day_counts[key] = monthly_day_counts.get(key, 0) + 1
 
-            return [
-                round(monthly_totals.get((year, month), 0.0), 2)
-                for year in range(RAINFALL_START_YEAR, RAINFALL_END_YEAR + 1)
-                for month in range(1, 13)
-            ], "open_meteo_archive"
+            history = []
+            for month_offset in range(RAINFALL_YEARS * 12):
+                month_index = start_year * 12 + start_month - 1 + month_offset
+                year, month_zero_index = divmod(month_index, 12)
+                month = month_zero_index + 1
+                key = (year, month)
+                if monthly_day_counts.get(key) != monthrange(year, month)[1]:
+                    raise ValueError(f"Historical rainfall response was incomplete for {year:04d}-{month:02d}.")
+                history.append(round(monthly_totals[key], 2))
+
+            return history, "open_meteo_archive"
     except Exception as exc:
         import logging
         import random

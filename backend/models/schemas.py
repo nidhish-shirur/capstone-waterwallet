@@ -1,6 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Annotated, Literal, Optional
 
+from models.constants import DEFAULT_FIRST_FLUSH_FRACTION
+
 
 # ---------------------------------------------------------------------------
 # Society / Demand
@@ -55,6 +57,7 @@ class RainfallForecastResponse(BaseModel):
     monthly_rainfall_mm: list[float]
     annual_yield_litres: float
     monthly_yield_litres: list[float]
+    forecast_start_month: str = Field(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     source: str
     history_source: str
     fallback_used: bool
@@ -80,6 +83,12 @@ class ROIRequest(BaseModel):
     annual_tanker_spend: float = Field(default=200000.0, ge=0.0, description="Annual spend on tanker water in ₹")
     annual_tanker_volume_litres: float = Field(default=1333333.3, ge=0.0, description="Annual tanker volume in litres")
     annual_municipal_spend: float = Field(default=46000.0, ge=0.0, description="Annual municipal water bill in ₹")
+    annual_opex_inr: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        allow_inf_nan=False,
+        description="Annual OPEX from the itemized cost estimate; omitted for legacy callers.",
+    )
 
     @field_validator("water_tariff_per_kl")
     @classmethod
@@ -110,6 +119,89 @@ class ROIResponse(BaseModel):
     yearly_breakdown: list[YearlyROI]
 
 
+class CostEstimateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    configuration: Literal["storage_only", "recharge_only", "hybrid"] = "storage_only"
+    gross_roof_area_sqm: float = Field(..., gt=0, allow_inf_nan=False)
+    capex_rate_per_sqm: float = Field(default=600.0, ge=0, allow_inf_nan=False)
+    tank_capacity_litres: float = Field(default=10000.0, ge=0, allow_inf_nan=False)
+    tank_cost_per_litre: float = Field(default=4.0, ge=0, allow_inf_nan=False)
+    recharge_connection_cost_inr: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    annual_maintenance_rate: float = Field(default=0.03, ge=0, allow_inf_nan=False)
+    fixed_annual_opex_inr: float = Field(default=0, ge=0, allow_inf_nan=False)
+
+
+class CostLineItem(BaseModel):
+    component: str
+    amount_inr: Optional[float]
+    quantity: Optional[float]
+    unit: str
+    unit_cost_inr: Optional[float]
+    assumption_source: str
+
+
+class CostEstimateResponse(BaseModel):
+    configuration: str
+    capex_breakdown: list[CostLineItem]
+    capex_subtotal_inr: float
+    total_capex_inr: Optional[float]
+    capex_complete: bool
+    annual_opex_breakdown: list[CostLineItem]
+    annual_opex_inr: Optional[float]
+    assumptions: list[str]
+    source: str
+
+
+class ConfigurationComparisonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    gross_roof_area_sqm: float = Field(..., gt=0, allow_inf_nan=False)
+    roof_surface_type: str = Field(default="concrete")
+    daily_non_potable_demand_litres: float = Field(..., gt=0, allow_inf_nan=False)
+    tank_capacity_litres: float = Field(..., gt=0, allow_inf_nan=False)
+    coastal_distance_km: float = Field(..., ge=0, allow_inf_nan=False)
+    soil_permeability_class: int = Field(..., ge=1, le=5)
+    borewell_present: int = Field(..., ge=0, le=1)
+    borewell_depth_m: float = Field(default=0, ge=0, allow_inf_nan=False)
+    annual_tanker_volume_litres: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    annual_tanker_spend_inr: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    capex_rate_per_sqm: float = Field(default=600.0, ge=0, allow_inf_nan=False)
+    tank_cost_per_litre: float = Field(default=4.0, ge=0, allow_inf_nan=False)
+    recharge_connection_cost_inr: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    annual_maintenance_rate: float = Field(default=0.03, ge=0, allow_inf_nan=False)
+    fixed_annual_opex_inr: float = Field(default=0, ge=0, allow_inf_nan=False)
+
+
+class ConfigurationScenarioResult(BaseModel):
+    configuration: str
+    eligible: bool
+    safety_reason: Optional[str]
+    average_useful_water_litres: Optional[float]
+    average_recharge_overflow_litres: Optional[float]
+    average_lost_overflow_litres: Optional[float]
+    average_unmet_demand_litres: Optional[float]
+    average_reliability_percent: Optional[float]
+    capex_breakdown: list[CostLineItem]
+    capex_subtotal_inr: float
+    total_capex_inr: Optional[float]
+    capex_complete: bool
+    annual_opex_inr: Optional[float]
+    annual_tanker_offset_litres: Optional[float]
+    annual_gross_savings_inr: Optional[float]
+    annual_net_savings_inr: Optional[float]
+    simple_payback_years: Optional[float]
+    missing_financial_inputs: list[str]
+
+
+class ConfigurationComparisonResponse(BaseModel):
+    rainfall_source: str
+    fallback_used: bool
+    years_used: list[int]
+    scenarios: list[ConfigurationScenarioResult]
+    source: str
+
+
 # ---------------------------------------------------------------------------
 # Monte Carlo ROI
 # ---------------------------------------------------------------------------
@@ -121,9 +213,19 @@ class MonteCarloRequest(BaseModel):
         description="Monthly eligible non-potable demand cap in KL",
     )
     capex_inr: float = Field(..., gt=0, description="One-time installation cost in INR")
+    annual_opex_inr: Optional[float] = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+        description="Annual operating cost in INR; defaults to the legacy CAPEX-based rate when omitted.",
+    )
     tank_capacity_litres: float = Field(default=50000, gt=0, description="Tank capacity used to cap annual usable yield")
     rainfall_reduction_percent: float = Field(default=0, ge=0, le=50, description="Scenario reduction applied to sampled rainfall")
-    tanker_rate_per_kl: float = Field(default=800.0, gt=0, description="Tanker water cost in INR/KL")
+    tanker_rate_per_kl: float = Field(
+        default=175.0,
+        gt=0,
+        description="Tanker water cost in INR/KL; replace with the rate calculated from local bills when available",
+    )
     annual_tanker_volume_litres: float = Field(default=0, ge=0, description="Annual tanker water volume used before municipal water")
     water_tariff_per_kl: float = Field(default=15.0, gt=0, description="Municipal water tariff in INR/KL")
     inflation_rate: float = Field(default=0.08, ge=0, le=0.5, description="Annual tanker price inflation")
@@ -140,8 +242,8 @@ class MonteCarloRequest(BaseModel):
     )
 
 class MonteCarloResponse(BaseModel):
-    median_breakeven_year: Optional[float]
-    mean_breakeven_year: Optional[float]
+    median_breakeven_year: Optional[float]  # Full-sample P50; 11 represents >10 years
+    mean_breakeven_year: Optional[float]    # Conditional on break-even within 10 years
     prob_breakeven_by_year: dict  # {"1": 0.02, "2": 0.45, ...}
     percentiles: dict             # {"p10": float, "p50": float, "p90": float}
     n_scenarios: int
@@ -168,7 +270,11 @@ class TankSizerRequest(BaseModel):
         default=[5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 70000],
         min_length=1,
     )
-    tanker_rate_per_litre: float = Field(default=0.8, ge=0)
+    tanker_rate_per_litre: float = Field(
+        default=0.175,
+        ge=0,
+        description="Tanker water cost in INR/L; default is ₹175/KL",
+    )
     tank_cost_per_litre: float = Field(
         default=4.0,
         gt=0,
@@ -187,7 +293,7 @@ class TankSizerRequest(BaseModel):
             "for a small-to-medium MMR society; override with actual quotation."
         ),
     )
-    first_flush_fraction: float = Field(default=0.05, ge=0, lt=1)
+    first_flush_fraction: float = Field(default=DEFAULT_FIRST_FLUSH_FRACTION, ge=0, lt=1)
     reliability_target_percent: float = Field(
         default=40.0,
         gt=0,
@@ -333,9 +439,11 @@ class BillingEntryCreate(BaseModel):
     month: int = Field(..., ge=1, le=12)
     year: int = Field(..., ge=1900, le=2100)
     municipal_bill: Optional[float] = Field(default=None, ge=0)
+    municipal_volume_kl: Optional[float] = Field(default=None, ge=0)
     tankers: Optional[int] = Field(default=None, ge=0)
     cost_per_tanker: Optional[float] = Field(default=None, ge=0)
     tanker_capacity_l: Optional[float] = Field(default=None, gt=0)
+    borewell_volume_kl: Optional[float] = Field(default=None, ge=0)
 
 class BillingEntryResponse(BaseModel):
     id: int
@@ -343,11 +451,37 @@ class BillingEntryResponse(BaseModel):
     month: int
     year: int
     municipal_bill: Optional[float]
+    municipal_volume_kl: Optional[float]
     tankers: Optional[int]
     cost_per_tanker: Optional[float]
     tanker_capacity_l: Optional[float]
+    borewell_volume_kl: Optional[float]
 
     model_config = {"from_attributes": True}
+
+class WaterAuditMonth(BaseModel):
+    month: int
+    demand_kl: float
+    non_potable_demand_kl: float
+    municipal_volume_kl: Optional[float]
+    tanker_volume_kl: Optional[float]
+    borewell_volume_kl: Optional[float]
+    known_supply_kl: float
+    shortage_kl: Optional[float]
+    tanker_dependency_percent: Optional[float]
+    missing_inputs: list[str]
+    demand_source: str = "derived_from_standard_assumption"
+    supply_source: str
+
+class WaterAuditResponse(BaseModel):
+    year: Optional[int]
+    available_years: list[int]
+    complete_year: bool
+    months: list[WaterAuditMonth]
+    observed_period_demand_kl: float
+    observed_period_tanker_volume_kl: Optional[float]
+    observed_period_tanker_dependency_percent: Optional[float]
+    source: str
 
 class SocietyDetailResponse(BaseModel):
     id: int

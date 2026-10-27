@@ -16,12 +16,16 @@ The application is designed for feasibility screening and committee decision sup
 
 - **Virtual Meter:** Calculate baseline daily and annual demand using IS:1172-style 135 LPCD demand, optional 15% UFW losses, and a 10% peak-demand buffer.
 - **Billing and tanker analysis:** Record municipal bills, tanker counts, tanker capacity, and tanker spend to quantify current water costs.
+- **Monthly water audit:** Review recorded municipal, tanker, and borewell volumes while preserving unknown values as unavailable instead of assuming zero.
 - **Map Studio:** Trace a rooftop catchment polygon on a Leaflet satellite map and calculate geodesic area with Turf.js.
 - **Rainfall and yield estimation:** Fetch historical precipitation from Open-Meteo and convert monthly rainfall into harvestable yield.
 - **Rainfall forecasting:** Forecast monthly rainfall with seasonal Auto-SARIMA when the forecasting dependencies and data support it.
 - **RWH configuration recommendation:** Apply a Tier 1 hydrogeological safety gate before using the Random Forest classifier.
 - **Explainable ML:** Return configuration confidence and SHAP feature contributions when the classifier path is used.
 - **ROI simulation:** Compare deterministic multi-year savings, payback, and a 1,000-scenario Monte Carlo break-even distribution.
+- **Itemized project costs:** Review backend-calculated CAPEX/OPEX and editable planning assumptions; cost assumptions are estimates, not contractor quotations.
+- **Configuration comparison:** Compare storage-only, recharge-only, and hybrid scenarios using the backend daily water balance and Tier 1 safety gate.
+- **Data provenance:** Identify derived estimates, historical rainfall inputs, regional fallbacks, and missing assumptions in the dashboard and audit exports.
 - **Tank sizing:** Evaluate candidate tank capacities against historical daily rainfall, demand, reliability targets, overflow, and recharge settings.
 - **AI advisory:** Optionally generate a plain-language committee advisory through Groq using already-calculated metrics.
 - **Connected workflow:** React Context carries society, catchment, yield, and ROI state across the Virtual Meter, Map Studio, and ROI Dashboard views.
@@ -167,6 +171,10 @@ cd backend
 alembic upgrade head
 ```
 
+The monthly water-audit fields are nullable columns added by the latest migration. Applying
+`alembic upgrade head` preserves existing billing records and leaves previously unrecorded
+municipal or borewell volumes unknown; do not backfill them as zero without verified records.
+
 ### 4. Start the backend
 
 From `backend/`:
@@ -260,6 +268,9 @@ python -m unittest discover -s tests
 | `POST` | `/api/roi/simulate` | Run deterministic ROI simulation |
 | `POST` | `/api/roi/monte-carlo` | Run probabilistic ROI simulation |
 | `POST` | `/api/roi/tank-sizer` | Evaluate tank capacities |
+| `POST` | `/api/roi/cost-estimate` | Calculate itemized CAPEX and annual OPEX from planning assumptions |
+| `POST` | `/api/roi/configuration-comparison` | Compare storage-only, recharge-only, and hybrid scenarios |
+| `GET` | `/api/societies/{id}/water-audit` | Build a 12-month audit from saved billing entries |
 | `POST` | `/api/ml/recommend` | Get a safety-gated ML configuration recommendation |
 | `POST` | `/api/ml/yield` | Predict monthly yield with a physics fallback |
 | `POST` | `/api/advisory/water` | Generate an optional Groq-powered advisory |
@@ -267,18 +278,18 @@ python -m unittest discover -s tests
 ## Current Limitations
 
 - Login and protected frontend routes are active, and society routes enforce bearer-token ownership. Calculation endpoints are not uniformly authenticated; do not expose the API publicly until route-level authorization is reviewed.
-- Normal society CRUD currently uses a temporary in-memory store; database read-only loader routes are separate.
+- Society, billing, and analysis records are persisted in PostgreSQL; the database compatibility routes remain available for existing clients.
 - The advisory endpoint requires `GROQ_API_KEY` and network access; it is not required for the core calculations.
 - External rainfall, satellite-tile, and AI services can fail or be rate-limited.
 - Bundled ML models support the prototype workflow but require broader validation with real labelled sites before production use.
 - The project is a feasibility prototype, not a substitute for certified structural, drainage, groundwater, or regulatory review.
 
 See [`POC_REPORT.md`](./POC_REPORT.md) for the evidence-based scope, known gaps, and production-readiness assessment.
+See [`CALCULATION_LOGIC.md`](./CALCULATION_LOGIC.md) for the detailed formulas, assumptions, and data flow used by all three application phases.
 
 ## Roadmap
 
 - Apply consistent authentication and authorization to calculation endpoints before public deployment.
-- Replace temporary in-memory CRUD with complete transactional database persistence.
 - Add frontend component, API integration, and end-to-end tests.
 - Expand ML training data and publish model validation metrics.
 - Add production deployment configuration, observability, and secret management.

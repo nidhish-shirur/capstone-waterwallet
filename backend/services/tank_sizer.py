@@ -6,6 +6,7 @@ Overflow is deliberately not financial savings:
 * lost overflow is a design-efficiency metric.
 """
 
+from calendar import monthrange
 from dataclasses import dataclass
 
 # Standard candidate capacities realistic for MMR residential installations (5k–70k L)
@@ -18,8 +19,8 @@ CANDIDATE_CAPACITIES_L = [5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000,
 # when each extra litre of tank capacity yields less than MARGINAL_RETURN_FLOOR
 # litres of additional useful water per year, because below this point civil
 # construction cost dominates the benefit.  The value 1.5 was chosen for MMR
-# residential economics where tank civil cost ≈ ₹4/L and tanker water ≈ ₹0.8/L,
-# giving a payback-neutral ratio of about 5.0; 1.5 is a conservative floor that
+# residential economics where tank civil cost ≈ ₹4/L and tanker water ≈ ₹0.175/L,
+# giving a payback-neutral ratio of about 22.9; 1.5 is a conservative floor that
 # stops well before the knee becomes flat.
 MARGINAL_RETURN_FLOOR = 1.5
 
@@ -41,6 +42,12 @@ class TankYearResult:
     reliability_percent: float
     ending_storage_litres: float
     total_inflow_litres: float
+    monthly_inflow_litres: list[float]
+    monthly_useful_water_litres: list[float]
+    monthly_unmet_demand_litres: list[float]
+    monthly_recharge_overflow_litres: list[float]
+    monthly_lost_overflow_litres: list[float]
+    monthly_ending_storage_litres: list[float]
 
 
 def simulate_tank_year(
@@ -59,36 +66,66 @@ def simulate_tank_year(
     tank_level = 0.0
     useful = recharge_overflow = lost_overflow = unmet = 0.0
     total_inflow = 0.0
+    monthly_inflow = [0.0] * 12
+    monthly_useful = [0.0] * 12
+    monthly_unmet = [0.0] * 12
+    monthly_recharge_overflow = [0.0] * 12
+    monthly_lost_overflow = [0.0] * 12
+    monthly_ending_storage = [0.0] * 12
+    month_index = 0
+    day_in_month = 0
 
     for rain_mm in rainfall_mm:
+        while month_index < 11 and day_in_month >= monthrange(year, month_index + 1)[1]:
+            month_index += 1
+            day_in_month = 0
+
         inflow = max(0.0, rain_mm) * usable_roof_area_sqm * runoff_coefficient
         inflow *= 1.0 - first_flush_fraction
         total_inflow += inflow
+        monthly_inflow[month_index] += inflow
+        served = 0.0
+        unmet_today = daily_demand_litres
+        recharged_today = 0.0
+        lost_today = 0.0
         if tank_capacity_litres <= 0:
             if recharge_enabled:
                 recharged = min(inflow, recharge_capacity_litres_per_day)
                 recharge_overflow += recharged
                 lost_overflow += inflow - recharged
+                recharged_today = recharged
+                lost_today = inflow - recharged
             else:
                 lost_overflow += inflow
-            unmet += daily_demand_litres
-            continue
-        available = tank_level + inflow
-        served = min(available, daily_demand_litres)
-        tank_level = available - served
-        overflow = max(0.0, tank_level - tank_capacity_litres)
-        tank_level = min(tank_level, tank_capacity_litres)
-
-        useful += served
-        unmet += daily_demand_litres - served
-        if recharge_enabled:
-            # Recharge pit has finite daily infiltration capacity.
-            # Overflow beyond this rate spills to stormwater drain.
-            recharged = min(overflow, recharge_capacity_litres_per_day)
-            recharge_overflow += recharged
-            lost_overflow += overflow - recharged
+                lost_today = inflow
         else:
-            lost_overflow += overflow
+            available = tank_level + inflow
+            served = min(available, daily_demand_litres)
+            tank_level = available - served
+            overflow = max(0.0, tank_level - tank_capacity_litres)
+            tank_level = min(tank_level, tank_capacity_litres)
+
+            if recharge_enabled:
+                # Recharge pit has finite daily infiltration capacity.
+                # Overflow beyond this rate spills to stormwater drain.
+                recharged = min(overflow, recharge_capacity_litres_per_day)
+                recharge_overflow += recharged
+                lost_overflow += overflow - recharged
+                recharged_today = recharged
+                lost_today = overflow - recharged
+            else:
+                lost_overflow += overflow
+                lost_today = overflow
+
+            useful += served
+            unmet_today = daily_demand_litres - served
+        unmet += unmet_today
+        monthly_useful[month_index] += served
+        monthly_unmet[month_index] += unmet_today
+        monthly_recharge_overflow[month_index] += recharged_today
+        monthly_lost_overflow[month_index] += lost_today
+        monthly_ending_storage[month_index] = tank_level
+        day_in_month += 1
 
     total_demand = daily_demand_litres * len(rainfall_mm)
     reliability = (useful / total_demand * 100.0) if total_demand else 100.0
@@ -101,6 +138,12 @@ def simulate_tank_year(
         reliability_percent=round(reliability, 2),
         ending_storage_litres=round(tank_level, 2),
         total_inflow_litres=round(total_inflow, 2),
+        monthly_inflow_litres=[round(value, 2) for value in monthly_inflow],
+        monthly_useful_water_litres=[round(value, 2) for value in monthly_useful],
+        monthly_unmet_demand_litres=[round(value, 2) for value in monthly_unmet],
+        monthly_recharge_overflow_litres=[round(value, 2) for value in monthly_recharge_overflow],
+        monthly_lost_overflow_litres=[round(value, 2) for value in monthly_lost_overflow],
+        monthly_ending_storage_litres=[round(value, 2) for value in monthly_ending_storage],
     )
 
 
@@ -126,7 +169,7 @@ def size_tanks(
       * ``fixed_system_cost`` — shared first-flush, filter, piping, and
         installation cost (default 7,200 INR in the API schema).
       * ``tanker_rate_per_litre`` — effective tanker water cost for savings
-        calculation (default 0.80 INR/L in the API schema).
+        calculation (default 0.175 INR/L, equivalent to 175 INR/KL).
 
     Capex for a candidate = fixed_system_cost + (capacity × tank_cost_per_litre).
     These defaults are illustrative for MMR housing-society scale; callers

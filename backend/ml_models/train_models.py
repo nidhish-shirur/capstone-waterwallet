@@ -156,11 +156,11 @@ def calculate_yield_kl(rainfall_mm, area=ROOFTOP_AREA_M2):
 # ---------------------------------------------------------------------------
 def train_yield_model(monthly: pd.DataFrame) -> tuple:
     """
-    1,080-sample dataset: 10 rooftop sizes × 180 months (full monthly series).
+    1,800-sample dataset: 10 rooftop sizes × 180 months (full monthly series).
     Features: rooftop_area, month, rain_mm, annual_rain_mm, peak_day_proxy,
               lag1_rain, lag2_rain, lag3_rain, sin_month, cos_month.
     Target: yield_kl (physics formula — RF learns the physics relationship).
-    Train: 2010–2021 (144 months). Test: 2022–2024 (36 months).
+    Train: 2010–2021 (1,440 rows). Test: 2022–2024 (360 rows).
     """
     print("\nTraining RF Yield Regressor...")
 

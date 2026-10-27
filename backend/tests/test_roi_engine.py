@@ -72,6 +72,21 @@ class ROIEngineParameterSensitivityTests(unittest.TestCase):
                     f"Payback period failed monotonic decrease between spend={spend_levels[i]} and spend={spend_levels[i+1]}",
                 )
 
+    def test_itemized_annual_opex_is_used_when_provided(self):
+        result = simulate_roi(
+            daily_demand_lpd=self.daily_demand_lpd,
+            annual_yield_litres=self.annual_tanker_volume,
+            tank_capacity_litres=self.tank_capacity,
+            water_tariff_per_kl=self.municipal_tariff,
+            installation_cost=self.capex,
+            annual_tanker_spend=200000,
+            annual_tanker_volume_litres=self.annual_tanker_volume,
+            annual_opex_inr=10000,
+        )
+
+        expected_savings = 200000 - 10000
+        self.assertEqual(result.yearly_breakdown[0].savings, expected_savings)
+
     def test_tanker_spend_marginal_derivative_bound_full_offset(self):
         """
         When annual yield >= annual tanker volume, 100% of tanker volume is offset.
@@ -268,6 +283,55 @@ class ROIEngineParameterSensitivityTests(unittest.TestCase):
                 water_tariff_per_kl=0.0,
                 installation_cost=self.capex,
             )
+
+    def test_payback_interpolates_within_first_crossing_year(self):
+        result = simulate_roi(
+            daily_demand_lpd=1000,
+            annual_yield_litres=365000,
+            tank_capacity_litres=50000,
+            water_tariff_per_kl=15,
+            installation_cost=180000,
+            years=10,
+            tariff_escalation_rate=0.10,
+            annual_tanker_spend=100000,
+            annual_tanker_volume_litres=365000,
+            annual_municipal_spend=0,
+        )
+
+        year_one_net = 100000 - 180000 * 0.03
+        year_two_net = 100000 * 1.10 - 180000 * 0.03
+        expected_payback = 1 + (180000 - year_one_net) / year_two_net
+        self.assertAlmostEqual(result.payback_years, round(expected_payback, 2))
+        self.assertAlmostEqual(
+            result.yearly_breakdown[1].cumulative_without_rwh
+            - result.yearly_breakdown[1].cumulative_with_rwh,
+            year_one_net + year_two_net - 180000,
+        )
+
+    def test_payback_is_zero_for_zero_capex_and_none_when_outside_horizon(self):
+        free_install = simulate_roi(
+            daily_demand_lpd=1000,
+            annual_yield_litres=365000,
+            tank_capacity_litres=50000,
+            water_tariff_per_kl=15,
+            installation_cost=0,
+            annual_tanker_spend=100000,
+            annual_tanker_volume_litres=365000,
+            annual_municipal_spend=0,
+        )
+        no_payback = simulate_roi(
+            daily_demand_lpd=1000,
+            annual_yield_litres=365000,
+            tank_capacity_litres=50000,
+            water_tariff_per_kl=15,
+            installation_cost=2000000,
+            annual_tanker_spend=100000,
+            annual_tanker_volume_litres=365000,
+            annual_municipal_spend=0,
+        )
+
+        self.assertEqual(free_install.payback_years, 0)
+        self.assertIsNone(no_payback.payback_years)
 
 
 if __name__ == "__main__":

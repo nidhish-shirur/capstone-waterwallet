@@ -47,7 +47,7 @@ reporting path.
 | External data integration | Demonstrated with dependency | Open-Meteo rainfall and forecast services |
 | ML decision support | Demonstrated with limitations | Random Forest models, safety gate, SHAP response |
 | Financial modelling | Demonstrated | Deterministic ROI and Monte Carlo endpoints |
-| Persistence | Partially demonstrated | SQLAlchemy/Alembic schema exists; active CRUD is temporarily in-memory |
+| Persistence | Demonstrated | Society, billing and analysis writes use PostgreSQL; focused persistence tests pass |
 | Security/authentication | Not production-ready | Login and society-level bearer-token checks are active, but calculation endpoints are not uniformly protected |
 | Automated verification | Partial | Frontend and backend unit suites run locally; browser end-to-end flows are not covered |
 | Production readiness | Not yet | Known operational, data, security and validation gaps remain |
@@ -334,8 +334,8 @@ The project documentation reports:
 |---|---:|---|
 | Configuration classifier | Accuracy 1.000; balanced accuracy 1.000; macro F1 1.000 | Excellent fit to the synthetic rule-generated dataset |
 | Yield regressor | MAE 4.8973 kL; R² 0.9865 in model metadata | Strong held-out performance within the available data regime |
-| Auto-SARIMA rainfall forecast | MAE 68.62 mm in project guide | Selected over a naive baseline and recursive Random Forest |
-| Configuration case study | 96% confidence for Hybrid, matching expert assessment | Encouraging single-site validation |
+| Auto-SARIMA rainfall forecast | MAE 63.76 mm in the notebook's 2022–2025 holdout | Notebook benchmark only; not a live-API validation |
+| Configuration case study | 97.1% confidence for Hybrid, matching expert assessment | Encouraging single-site validation |
 
 ### Interpretation and caution
 
@@ -359,11 +359,14 @@ The active FastAPI application registers the following route families:
 |---|---|---|
 | `GET /` | Health check | Active |
 | `POST /api/societies/baseline` | Demand calculation | Active |
-| `POST /api/societies/` | Create society | Active but in-memory |
-| `GET /api/societies/` | List in-memory societies | Active but in-memory |
-| `GET /api/societies/database` | Read persisted societies | Temporary read-only path |
-| `GET /api/societies/{id}/database` | Read persisted society | Temporary read-only path |
-| `GET /api/societies/{id}/billing` | Read persisted billing | Temporary read-only path |
+| `POST /api/societies/` | Create society | Active; persists to PostgreSQL |
+| `GET /api/societies/` | List societies for authenticated user | Active; reads PostgreSQL |
+| `GET /api/societies/{id}` | Read society and billing history | Active; reads PostgreSQL |
+| `PUT /api/societies/{id}` | Update society | Active; persists to PostgreSQL |
+| `POST /api/societies/{id}/billing` | Replace billing history | Active; transactional PostgreSQL write |
+| `GET /api/societies/database` | Read persisted societies | Compatibility alias |
+| `GET /api/societies/{id}/database` | Read persisted society | Compatibility alias |
+| `GET /api/societies/{id}/billing` | Read persisted billing | Active; reads PostgreSQL |
 | `POST /api/catchment/calculate` | Rainfall and yield | Active |
 | `POST /api/catchment/forecast` | Rainfall forecast and yield | Active |
 | `POST /api/ml/yield` | ML yield prediction | Active with model service |
@@ -393,29 +396,26 @@ The repository includes a credible persistence foundation:
 - User, society, billing-entry and society-analysis models.
 - JSONB storage for computed analysis data.
 
-However, the active society CRUD flow is currently an in-memory store:
-`societies.py` keeps records in the process-local `_societies` dictionary, so
-those society and billing writes are lost whenever the backend restarts.
-Database society and billing endpoints are read-only loaders; analysis writes
-may be persisted when a matching database society exists, but otherwise use
-the in-memory analysis store. This creates an important distinction:
+Society, billing and analysis records now use the PostgreSQL models as their
+source of truth. Society and billing writes are committed to the database;
+billing replacement is transactional, and society queries are scoped to the
+authenticated owner. The older `/database` society routes remain as
+compatibility aliases:
 
 | Capability | Current state |
 |---|---|
 | Persisted schema | Implemented |
 | Migration foundation | Implemented |
-| Read persisted society data | Implemented through temporary endpoints |
-| Standard create/update/list/delete flow | Not database-backed; active writes use `_societies` |
-| Billing and analysis writes | Billing remains in-memory; analysis persistence depends on whether a matching database society exists |
-| User ownership enforcement | Applied to society routes; not consistently applied to analysis endpoints |
-| Durable analysis history | Model exists; active write path is not fully persistent |
+| Standard create/update/list/read flow | Database-backed; society records are scoped to their owner |
+| Billing writes and reads | Database-backed; replacement is committed as one transaction |
+| Analysis writes and reads | Database-backed and scoped to society ownership |
+| Automated persistence coverage | Focused tests verify writes survive new database sessions |
+| Delete endpoint | Not currently exposed |
 
-Society creation associates the record with the authenticated user, and
-in-memory society reads and writes check that owner. The persistence and
-analysis flows still span in-memory and database paths, so saved database
-records do not behave like normal writable societies. Before production use,
-the normal CRUD and analysis paths should move to a single transactional
-database flow with consistent authenticated ownership checks.
+Database connection or write failures are returned as service errors rather
+than falling back to process-local data. The API therefore requires the
+configured database to be available for society, billing and analysis
+operations.
 
 ### Monte Carlo caveats
 
@@ -556,8 +556,7 @@ the corrected backend-context run passed.
 | Thane-specific rainfall calibration | Poor transfer to other locations | Open-Meteo location retrieval | Fit or validate models per MMR zone |
 | External API outage | Map and rainfall workflow can be unavailable | Explicit errors and some UI fallback state | Add controlled caching, retries and observable service status |
 | Partial API authorization | Calculation and analysis routes can be called without a bearer token | Society routes enforce owner checks | Apply consistent API authentication and authorization |
-| In-memory CRUD and partial persistence | Society and billing writes can be lost on restart; analysis persistence varies by record source | Selected database loaders and analysis writes | Make PostgreSQL the single source of truth |
-| Inconsistent persistence ownership path | Database-loaded records do not behave like in-memory editable societies | Explicitly separate routes | Use one transactional repository path with owner filters |
+| Database availability | Society, billing and analysis operations are unavailable if PostgreSQL cannot be reached | Explicit service errors; database-backed persistence tests | Add deployment monitoring, backups and restore drills |
 | Monte Carlo fallback | Generic fallback can look like calibrated output | `scenarios_used` response field and UI warning | Fail clearly or require a site-specific dataset for pilot decisions |
 | Independent-month Monte Carlo sampling | Breaks within-year rainfall correlation | Documented assumption | Bootstrap complete historical years |
 | Fractional occupant truncation | Demand may be understated for fractional averages | Current `int()` behavior is documented | Adopt and test an explicit rounding policy |
@@ -623,8 +622,6 @@ public-facing financial or engineering authority.
 ### Phase B — Complete application integrity
 
 - Apply consistent authentication in backend routes; frontend login and protected navigation are already active.
-- Replace the in-memory society store with SQLAlchemy repositories.
-- Add ownership filters to every society, billing and analysis query.
 - Replace independent-month Monte Carlo sampling with complete historical-year
   bootstrap sampling.
 - Add database migration and rollback checks.

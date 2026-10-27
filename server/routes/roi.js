@@ -46,7 +46,7 @@ router.post("/tank-sizer", async (req, res) => {
       gross_roof_area_sqm,
       roof_surface_type = "concrete",
       first_flush_fraction = 0.05,
-      tanker_rate_per_litre = 0.80,
+      tanker_rate_per_litre = 0.175,
       tank_cost_per_litre = 4.0,
       fixed_system_cost = 7200.0,
       reliability_target_percent = 40.0,
